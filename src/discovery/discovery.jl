@@ -97,7 +97,7 @@ function __init__()
         from_artifact = (
             # Detect HIP version, which will influence what device libraries to use.
             (isempty(libhip) || Base.thisminor(_hip_runtime_version()) > v"5.4")
-            && !enabled_opaque_pointers)
+            && !enabled_opaque_pointers && !haskey(ENV, "JULIA_AMDGPU_ARTIFACTS_DISABLE"))
 
         # If ROCm 5.5+ - use artifact device libraries.
         global libdevice_libs = get_device_libs(from_artifact; rocm_path)
