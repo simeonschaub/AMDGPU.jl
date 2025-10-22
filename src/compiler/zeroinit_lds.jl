@@ -2,8 +2,8 @@
 llvmsize(::LLVM.LLVMHalf) = sizeof(Float16)
 llvmsize(::LLVM.LLVMFloat) = sizeof(Float32)
 llvmsize(::LLVM.LLVMDouble) = sizeof(Float64)
-function llvmsize(::LLVM.IntegerType)
-    div(Int(intwidth(GenericValue(LLVM.Int128Type(), -1))), 8)
+function llvmsize(I::LLVM.IntegerType)
+    cld(Int(intwidth(GenericValue(I, -1))), 8)
 end
 
 llvmsize(ty::LLVM.ArrayType) = length(ty) * llvmsize(eltype(ty))

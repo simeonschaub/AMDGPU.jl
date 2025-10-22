@@ -35,7 +35,7 @@
         # By requesting a larger-than-datatype alignment,
         # we might be able to vectorize.
         # TODO: Make the alignment configurable
-        alignment!(gv, Base.max(32, Base.datatype_alignment(T)))
+        #alignment!(gv, Base.max(32, Base.datatype_alignment(T)))
 
         # generate IR
         @dispose builder=IRBuilder() begin
