@@ -10,9 +10,9 @@ using Printf
 import ..AMDGPU
 import ..AMDGPU: AS
 import ..Runtime
+using ..Runtime: HostMemory
 import ..Device
 import ..HIP
-import ..Mem
 
 include("zeroinit_lds.jl")
 include("device_libs.jl")

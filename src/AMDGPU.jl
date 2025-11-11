@@ -56,11 +56,14 @@ using .HIP: HIPContext, HIPDevice, HIPStream
 export HIPContext, HIPDevice, HIPStream
 
 include("cache.jl")
+include("pointer.jl")
 
 include("runtime/Runtime.jl")
 import .Runtime
+using .Runtime: TaskLocalState
 
-include("pointer.jl")
+using .Runtime: PerDevice, AbstractMemory, DeviceMemory, HostMemory, UnifiedMemory
+using GPUToolbox: LazyInitialized, @memoize
 include("memory.jl")
 include("refpointer.jl")
 
@@ -99,9 +102,11 @@ include("compiler/Compiler.jl")
 import .Compiler
 import .Compiler: hipfunction, compiler_config
 
-include("tls.jl")
+#include("tls.jl")
 include("highlevel.jl")
 include("reflection.jl")
+using Base: aligned_sizeof
+using BFloat16s: BFloat16
 include("array.jl")
 include("conversions.jl")
 include("broadcast.jl")

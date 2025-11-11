@@ -52,7 +52,7 @@ function HostCall(
         end
     end
     buf_len = max(sizeof(UInt64), buf_len) # make room for return buffer pointer
-    buf = Mem.HostBuffer(buf_len, AMDGPU.HIP.hipHostAllocDefault)
+    buf = HostMemory(buf_len, AMDGPU.HIP.hipHostAllocDefault)
 
     buf_ptr = LLVMPtr{UInt8, AS.Global}(convert(Ptr{UInt8}, buf))
     host_signal_store!(HSA.Signal(signal_handle), READY_SENTINEL)
@@ -61,7 +61,7 @@ end
 
 struct HostCallHolder
     hc::HostCall
-    ret_bufs::Vector{Mem.HostBuffer}
+    ret_bufs::Vector{HostMemory}
     task::Task
     finish::Ref{Bool}
     continuous::Ref{Bool}

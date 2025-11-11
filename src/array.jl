@@ -878,7 +878,7 @@ julia> ROCArray(1:3)
     return adapt(ROCArrayKernelAdaptor{memory}(), xs)
 end
 
-Base.getindex(::typeof(cu), xs...) = ROCArray([xs...])
+Base.getindex(::typeof(roc), xs...) = ROCArray([xs...])
 
 
 ## utilities

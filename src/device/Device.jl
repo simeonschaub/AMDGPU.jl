@@ -11,7 +11,7 @@ import ..LinearAlgebra
 import ..HSA
 import ..HIP
 import ..Runtime
-import ..Mem
+using ..Runtime: HostMemory
 import ..AMDGPU
 import .AMDGPU: method_table
 import ..UnsafeAtomics

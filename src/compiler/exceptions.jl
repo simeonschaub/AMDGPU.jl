@@ -6,7 +6,7 @@ function Base.showerror(io::IO, ex::KernelException)
     print(io, "KernelException: exception thrown during kernel execution on `$(ex.dev)`.")
 end
 
-const _exception_flags = Dict{HIP.HIPDevice, Mem.HostBuffer}()
+const _exception_flags = Dict{HIP.HIPDevice, HostMemory}()
 
 function create_exception!(mod::HIP.HIPModule)
     exception_flag = get!(_exception_flags, mod.dev,

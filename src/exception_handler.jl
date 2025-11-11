@@ -1,5 +1,5 @@
 # hash(HIPDevice) => HostMemory
-const GLOBAL_EXCEPTION_INFO = Dict{UInt, Mem.HostBuffer}()
+const GLOBAL_EXCEPTION_INFO = Dict{UInt, HostMemory}()
 
 # TODO RT_LOCK?
 function exception_info(dev::HIPDevice)::Ptr{Device.ExceptionInfo}

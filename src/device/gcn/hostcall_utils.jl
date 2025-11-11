@@ -187,12 +187,12 @@ function Base.showerror(io::IO, err::HostCallException)
 end
 
 const NAMED_PERDEVICE_HOSTCALLS = Dict{
-    HIP.HIPDevice, Dict{Symbol, Tuple{HostCallHolder, Mem.HostBuffer}}}()
+    HIP.HIPDevice, Dict{Symbol, Tuple{HostCallHolder, HostMemory}}}()
 
 function named_perdevice_hostcall(func, dev::HIP.HIPDevice, name::Symbol)
     Base.@lock Runtime.RT_LOCK begin
         hcs = get!(
-            () -> Dict{Symbol, Tuple{HostCallHolder, Mem.HostBuffer}}(),
+            () -> Dict{Symbol, Tuple{HostCallHolder, HostMemory}}(),
             NAMED_PERDEVICE_HOSTCALLS, dev)
         get!(func, hcs, name)
     end

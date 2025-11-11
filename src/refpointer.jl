@@ -36,11 +36,11 @@ Base.convert(::Type{ROCRef{T}}, x::AbstractROCRef{T}) where {T} = x
 ## reference backed by a single allocation
 
 mutable struct ROCRefValue{T} <: AbstractROCRef{T}
-    buf::Managed{Runtime.Mem.DeviceMemory}
+    buf::Managed{DeviceMemory}
 
     function ROCRefValue{T}() where {T}
         @assert isbitstype(T) "ROCRef only supports bits types"
-        buf = pool_alloc(Runtime.Mem.DeviceMemory, Base.aligned_sizeof(T))
+        buf = pool_alloc(DeviceMemory, Base.aligned_sizeof(T))
         obj = new(buf)
         finalizer(obj) do _
             pool_free(buf)
