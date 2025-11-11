@@ -27,17 +27,25 @@ end
 # ccall integration
 Base.unsafe_convert(T, buf::AbstractAMDBuffer) = convert(T, buf)
 
-struct HIPBuffer <: AbstractAMDBuffer
-    device::HIPDevice # TODO not used?
+
+## device memory
+
+"""
+    DeviceMemory
+
+Device memory residing on the GPU.
+"""
+struct DeviceMemory <: AbstractAMDBuffer
+    device::HIPDevice
     ctx::HIPContext
     ptr::Ptr{Cvoid}
     bytesize::Int
     own::Bool
 end
 
-function HIPBuffer(bytesize; stream::HIP.HIPStream)
+function DeviceMemory(bytesize; stream::HIP.HIPStream)
     dev, ctx = stream.device, stream.ctx
-    bytesize == 0 && return HIPBuffer(dev, ctx, C_NULL, 0, true)
+    bytesize == 0 && return DeviceMemory(dev, ctx, C_NULL, 0, true)
 
     AMDGPU.maybe_collect()
     pool = pool_create(dev)
@@ -61,24 +69,24 @@ function HIPBuffer(bytesize; stream::HIP.HIPStream)
     ptr == C_NULL && throw(HIP.HIPError(HIP.hipErrorOutOfMemory))
 
     AMDGPU.account!(AMDGPU.memory_stats(dev), bytesize)
-    HIPBuffer(dev, ctx, ptr, bytesize, true)
+    DeviceMemory(dev, ctx, ptr, bytesize, true)
 end
 
-function HIPBuffer(ptr::Ptr{Cvoid}, bytesize::Int; own::Bool = false)
+function DeviceMemory(ptr::Ptr{Cvoid}, bytesize::Int; own::Bool = false)
     s = AMDGPU.stream()
-    HIPBuffer(s.device, s.ctx, ptr, bytesize, own)
+    DeviceMemory(s.device, s.ctx, ptr, bytesize, own)
 end
 
-Base.sizeof(b::HIPBuffer) = UInt64(b.bytesize)
+Base.sizeof(b::DeviceMemory) = UInt64(b.bytesize)
 
-Base.convert(::Type{Ptr{T}}, buf::HIPBuffer) where T = convert(Ptr{T}, buf.ptr)
+Base.convert(::Type{Ptr{T}}, buf::DeviceMemory) where T = convert(Ptr{T}, buf.ptr)
 
-function view(buf::HIPBuffer, bytesize::Int)
+function view(buf::DeviceMemory, bytesize::Int)
     bytesize > buf.bytesize && throw(BoundsError(buf, bytesize))
-    HIPBuffer(buf.device, buf.ctx, buf.ptr + bytesize, buf.bytesize - bytesize, buf.own)
+    DeviceMemory(buf.device, buf.ctx, buf.ptr + bytesize, buf.bytesize - bytesize, buf.own)
 end
 
-function free(buf::HIPBuffer; stream::HIP.HIPStream)
+function free(buf::DeviceMemory; stream::HIP.HIPStream)
     buf.own || return
 
     buf.ptr == C_NULL && return
@@ -87,25 +95,32 @@ function free(buf::HIPBuffer; stream::HIP.HIPStream)
     return
 end
 
-function upload!(dst::HIPBuffer, src::Ptr, bytesize::Int; stream::HIP.HIPStream)
+function upload!(dst::DeviceMemory, src::Ptr, bytesize::Int; stream::HIP.HIPStream)
     bytesize == 0 && return
     HIP.hipMemcpyHtoDAsync(dst, src, bytesize, stream)
     return
 end
 
-function download!(dst::Ptr, src::HIPBuffer, bytesize::Int; stream::HIP.HIPStream)
+function download!(dst::Ptr, src::DeviceMemory, bytesize::Int; stream::HIP.HIPStream)
     bytesize == 0 && return
     HIP.hipMemcpyDtoHAsync(dst, src, bytesize, stream)
     return
 end
 
-function transfer!(dst::HIPBuffer, src::HIPBuffer, bytesize::Int; stream::HIP.HIPStream)
+function transfer!(dst::DeviceMemory, src::DeviceMemory, bytesize::Int; stream::HIP.HIPStream)
     bytesize == 0 && return
     HIP.hipMemcpyDtoDAsync(dst, src, bytesize, stream)
     return
 end
 
-struct HostBuffer <: AbstractAMDBuffer
+## host memory
+
+"""
+    HostMemory
+
+Pinned memory residing on the CPU, possibly accessible on the GPU.
+"""
+struct HostMemory <: AbstractAMDBuffer
     device::HIPDevice
     ctx::HIPContext
     ptr::Ptr{Cvoid}
@@ -114,59 +129,83 @@ struct HostBuffer <: AbstractAMDBuffer
     own::Bool
 end
 
-function HostBuffer()
+function HostMemory()
     s = AMDGPU.stream()
-    HostBuffer(s.device, s.ctx, C_NULL, C_NULL, 0, true)
+    HostMemory(s.device, s.ctx, C_NULL, C_NULL, 0, true)
 end
 
-function HostBuffer(
+function HostMemory(
     bytesize::Integer, flags = 0; stream::HIP.HIPStream = AMDGPU.stream(),
 )
-    bytesize == 0 && return HostBuffer()
+    bytesize == 0 && return HostMemory()
 
     ptr_ref = Ref{Ptr{Cvoid}}()
     HIP.hipHostMalloc(ptr_ref, bytesize, flags)
     ptr = ptr_ref[]
     dev_ptr = get_device_ptr(ptr)
-    HostBuffer(stream.device, stream.ctx, ptr, dev_ptr, bytesize, true)
+    HostMemory(stream.device, stream.ctx, ptr, dev_ptr, bytesize, true)
 end
 
-function HostBuffer(
+function HostMemory(
     ptr::Ptr{Cvoid}, sz::Integer;
     stream::HIP.HIPStream = AMDGPU.stream(), own::Bool = false,
 )
     pin(ptr, sz)
     dev_ptr = get_device_ptr(ptr)
-    HostBuffer(stream.device, stream.ctx, ptr, dev_ptr, sz, own)
+    HostMemory(stream.device, stream.ctx, ptr, dev_ptr, sz, own)
 end
 
-Base.sizeof(b::HostBuffer) = UInt64(b.bytesize)
+Base.sizeof(b::HostMemory) = UInt64(b.bytesize)
 
-function view(buf::HostBuffer, bytesize::Int)
+Base.convert(::Type{Ptr{T}}, buf::HostMemory) where T = convert(Ptr{T}, buf.ptr)
+
+@inline device_ptr(buf::HostMemory) = buf.dev_ptr
+
+function view(buf::HostMemory, bytesize::Int)
     bytesize > buf.bytesize && throw(BoundsError(buf, bytesize))
-    HostBuffer(
+    HostMemory(
         buf.device, buf.ctx,
         buf.ptr + bytesize, buf.dev_ptr + bytesize,
         buf.bytesize - bytesize, buf.own)
 end
 
-upload!(dst::HostBuffer, src::Ptr, sz::Int; stream::HIP.HIPStream) =
+function free(buf::HostMemory; kwargs...)
+    buf.own || return
+    buf.ptr == C_NULL && return
+    unpin(buf.ptr)
+    # TODO
+    # call HIP.hipHostFree(buf) if memory was allocated via hipHostMalloc
+    # or is unpinning enough?
+    return
+end
+
+upload!(dst::HostMemory, src::Ptr, sz::Int; stream::HIP.HIPStream) =
     HIP.memcpy(dst, src, sz, HIP.hipMemcpyHostToHost, stream)
 
-upload!(dst::HostBuffer, src::HIPBuffer, sz::Int; stream::HIP.HIPStream) =
+upload!(dst::HostMemory, src::DeviceMemory, sz::Int; stream::HIP.HIPStream) =
     HIP.memcpy(dst, src, sz, HIP.hipMemcpyDeviceToHost, stream)
 
-download!(dst::Ptr, src::HostBuffer, sz::Int; stream::HIP.HIPStream) =
+download!(dst::Ptr, src::HostMemory, sz::Int; stream::HIP.HIPStream) =
     HIP.memcpy(dst, src, sz, HIP.hipMemcpyHostToHost, stream)
 
-download!(dst::HIPBuffer, src::HostBuffer, sz::Int; stream::HIP.HIPStream) =
+download!(dst::DeviceMemory, src::HostMemory, sz::Int; stream::HIP.HIPStream) =
     HIP.memcpy(dst, src, sz, HIP.hipMemcpyHostToDevice, stream)
 
-transfer!(dst::HostBuffer, src::HostBuffer, sz::Int; stream::HIP.HIPStream) =
+transfer!(dst::HostMemory, src::HostMemory, sz::Int; stream::HIP.HIPStream) =
     HIP.memcpy(dst, src, sz, HIP.hipMemcpyHostToHost, stream)
 
+# download!(::Ptr, ::DeviceMemory)
+transfer!(dst::HostMemory, src::DeviceMemory, sz::Int; stream::HIP.HIPStream) =
+    HIP.memcpy(dst, src, sz, HIP.hipMemcpyDeviceToHost, stream)
+
+# upload!(::DeviceMemory, ::Ptr)
+transfer!(dst::DeviceMemory, src::HostMemory, sz::Int; stream::HIP.HIPStream) =
+    HIP.memcpy(dst, src, sz, HIP.hipMemcpyHostToDevice, stream)
+
+## unified memory
+
 """
-    HIPUnifiedBuffer
+    UnifiedMemory
 
 Unified memory buffer that can be accessed from both host and device.
 Allocated using `hipMallocManaged` with automatic migration between host and device.
@@ -174,7 +213,7 @@ Allocated using `hipMallocManaged` with automatic migration between host and dev
 Supports memory advise hints and explicit prefetching for performance optimization.
 See: https://rocm.docs.amd.com/projects/HIP/en/latest/how-to/hip_runtime_api/memory_management/unified_memory.html
 """
-struct HIPUnifiedBuffer <: AbstractAMDBuffer
+struct UnifiedMemory <: AbstractAMDBuffer
     device::HIPDevice
     ctx::HIPContext
     ptr::Ptr{Cvoid}
@@ -182,12 +221,12 @@ struct HIPUnifiedBuffer <: AbstractAMDBuffer
     own::Bool
 end
 
-function HIPUnifiedBuffer(
+function UnifiedMemory(
     bytesize::Integer, flags = HIP.hipMemAttachGlobal;
     stream::HIP.HIPStream = AMDGPU.stream(),
 )
     dev, ctx = stream.device, stream.ctx
-    bytesize == 0 && return HIPUnifiedBuffer(dev, ctx, C_NULL, 0, true)
+    bytesize == 0 && return UnifiedMemory(dev, ctx, C_NULL, 0, true)
 
     AMDGPU.maybe_collect()
 
@@ -197,29 +236,29 @@ function HIPUnifiedBuffer(
     ptr == C_NULL && throw(HIP.HIPError(HIP.hipErrorOutOfMemory))
 
     AMDGPU.account!(AMDGPU.memory_stats(dev), bytesize)
-    HIPUnifiedBuffer(dev, ctx, ptr, bytesize, true)
+    UnifiedMemory(dev, ctx, ptr, bytesize, true)
 end
 
-function HIPUnifiedBuffer(
+function UnifiedMemory(
     ptr::Ptr{Cvoid}, sz::Integer;
     stream::HIP.HIPStream = AMDGPU.stream(), own::Bool = false,
 )
-    HIPUnifiedBuffer(stream.device, stream.ctx, ptr, sz, own)
+    UnifiedMemory(stream.device, stream.ctx, ptr, sz, own)
 end
 
-Base.sizeof(b::HIPUnifiedBuffer) = UInt64(b.bytesize)
+Base.sizeof(b::UnifiedMemory) = UInt64(b.bytesize)
 
-Base.convert(::Type{Ptr{T}}, buf::HIPUnifiedBuffer) where T = convert(Ptr{T}, buf.ptr)
+Base.convert(::Type{Ptr{T}}, buf::UnifiedMemory) where T = convert(Ptr{T}, buf.ptr)
 
-function view(buf::HIPUnifiedBuffer, bytesize::Int)
+function view(buf::UnifiedMemory, bytesize::Int)
     bytesize > buf.bytesize && throw(BoundsError(buf, bytesize))
-    HIPUnifiedBuffer(
+    UnifiedMemory(
         buf.device, buf.ctx,
         buf.ptr + bytesize,
         buf.bytesize - bytesize, buf.own)
 end
 
-function free(buf::HIPUnifiedBuffer; kwargs...)
+function free(buf::UnifiedMemory; kwargs...)
     buf.own || return
     buf.ptr == C_NULL && return
     HIP.hipFree(buf)
@@ -228,61 +267,61 @@ function free(buf::HIPUnifiedBuffer; kwargs...)
 end
 
 # Unified memory can be accessed from both host and device
-upload!(dst::HIPUnifiedBuffer, src::Ptr, sz::Int; stream::HIP.HIPStream) =
+upload!(dst::UnifiedMemory, src::Ptr, sz::Int; stream::HIP.HIPStream) =
     HIP.memcpy(dst, src, sz, HIP.hipMemcpyHostToHost, stream)
 
-upload!(dst::HIPUnifiedBuffer, src::HIPBuffer, sz::Int; stream::HIP.HIPStream) =
+upload!(dst::UnifiedMemory, src::DeviceMemory, sz::Int; stream::HIP.HIPStream) =
     HIP.memcpy(dst, src, sz, HIP.hipMemcpyDeviceToDevice, stream)
 
-upload!(dst::HIPUnifiedBuffer, src::HostBuffer, sz::Int; stream::HIP.HIPStream) =
+upload!(dst::UnifiedMemory, src::HostMemory, sz::Int; stream::HIP.HIPStream) =
     HIP.memcpy(dst, src, sz, HIP.hipMemcpyHostToHost, stream)
 
-download!(dst::Ptr, src::HIPUnifiedBuffer, sz::Int; stream::HIP.HIPStream) =
+download!(dst::Ptr, src::UnifiedMemory, sz::Int; stream::HIP.HIPStream) =
     HIP.memcpy(dst, src, sz, HIP.hipMemcpyHostToHost, stream)
 
-download!(dst::HIPBuffer, src::HIPUnifiedBuffer, sz::Int; stream::HIP.HIPStream) =
+download!(dst::DeviceMemory, src::UnifiedMemory, sz::Int; stream::HIP.HIPStream) =
     HIP.memcpy(dst, src, sz, HIP.hipMemcpyDeviceToDevice, stream)
 
-download!(dst::HostBuffer, src::HIPUnifiedBuffer, sz::Int; stream::HIP.HIPStream) =
+download!(dst::HostMemory, src::UnifiedMemory, sz::Int; stream::HIP.HIPStream) =
     HIP.memcpy(dst, src, sz, HIP.hipMemcpyHostToHost, stream)
 
-transfer!(dst::HIPUnifiedBuffer, src::HIPUnifiedBuffer, sz::Int; stream::HIP.HIPStream) =
+transfer!(dst::UnifiedMemory, src::UnifiedMemory, sz::Int; stream::HIP.HIPStream) =
     HIP.memcpy(dst, src, sz, HIP.hipMemcpyDefault, stream)
 
-transfer!(dst::HIPUnifiedBuffer, src::HIPBuffer, sz::Int; stream::HIP.HIPStream) =
+transfer!(dst::UnifiedMemory, src::DeviceMemory, sz::Int; stream::HIP.HIPStream) =
     HIP.memcpy(dst, src, sz, HIP.hipMemcpyDeviceToDevice, stream)
 
-transfer!(dst::HIPBuffer, src::HIPUnifiedBuffer, sz::Int; stream::HIP.HIPStream) =
+transfer!(dst::DeviceMemory, src::UnifiedMemory, sz::Int; stream::HIP.HIPStream) =
     HIP.memcpy(dst, src, sz, HIP.hipMemcpyDeviceToDevice, stream)
 
-transfer!(dst::HIPUnifiedBuffer, src::HostBuffer, sz::Int; stream::HIP.HIPStream) =
+transfer!(dst::UnifiedMemory, src::HostMemory, sz::Int; stream::HIP.HIPStream) =
     HIP.memcpy(dst, src, sz, HIP.hipMemcpyHostToHost, stream)
 
-transfer!(dst::HostBuffer, src::HIPUnifiedBuffer, sz::Int; stream::HIP.HIPStream) =
+transfer!(dst::HostMemory, src::UnifiedMemory, sz::Int; stream::HIP.HIPStream) =
     HIP.memcpy(dst, src, sz, HIP.hipMemcpyHostToHost, stream)
 
 """
-    prefetch!(buf::HIPUnifiedBuffer, device::HIPDevice; stream::HIP.HIPStream)
-    prefetch!(buf::HIPUnifiedBuffer; stream::HIP.HIPStream)
+    prefetch!(buf::UnifiedMemory, device::HIPDevice; stream::HIP.HIPStream)
+    prefetch!(buf::UnifiedMemory; stream::HIP.HIPStream)
 
 Prefetch unified memory to the specified device (or the buffer's device).
 Explicitly migrates the data to improve performance by reducing page faults.
 
 See: https://rocm.docs.amd.com/projects/HIP/en/latest/reference/hip_runtime_api/modules/memory_management/unified_memory_reference.html#_CPPv419hipMemPrefetchAsyncPvmi13hipStream_t
 """
-function prefetch!(buf::HIPUnifiedBuffer, device::HIPDevice; stream::HIP.HIPStream = AMDGPU.stream())
+function prefetch!(buf::UnifiedMemory, device::HIPDevice; stream::HIP.HIPStream = AMDGPU.stream())
     buf.ptr == C_NULL && return
     HIP.hipMemPrefetchAsync(buf.ptr, buf.bytesize, HIP.device_id(device), stream)
     return
 end
 
-function prefetch!(buf::HIPUnifiedBuffer; stream::HIP.HIPStream = AMDGPU.stream())
+function prefetch!(buf::UnifiedMemory; stream::HIP.HIPStream = AMDGPU.stream())
     prefetch!(buf, buf.device; stream)
 end
 
 """
-    advise!(buf::HIPUnifiedBuffer, advice::HIP.hipMemoryAdvise, device::HIPDevice)
-    advise!(buf::HIPUnifiedBuffer, advice::HIP.hipMemoryAdvise)
+    advise!(buf::UnifiedMemory, advice::HIP.hipMemoryAdvise, device::HIPDevice)
+    advise!(buf::UnifiedMemory, advice::HIP.hipMemoryAdvise)
 
 Provide hints to the unified memory system about how the memory will be used.
 
@@ -298,18 +337,18 @@ Available advice flags:
 
 See: https://rocm.docs.amd.com/projects/HIP/en/latest/reference/hip_runtime_api/modules/memory_management/unified_memory_reference.html#_CPPv412hipMemAdvisePvmj8hipMemoryAdvise_t
 """
-function advise!(buf::HIPUnifiedBuffer, advice::HIP.hipMemoryAdvise, device::HIPDevice)
+function advise!(buf::UnifiedMemory, advice::HIP.hipMemoryAdvise, device::HIPDevice)
     buf.ptr == C_NULL && return
     HIP.hipMemAdvise(buf.ptr, buf.bytesize, advice, HIP.device_id(device))
     return
 end
 
-function advise!(buf::HIPUnifiedBuffer, advice::HIP.hipMemoryAdvise)
+function advise!(buf::UnifiedMemory, advice::HIP.hipMemoryAdvise)
     advise!(buf, advice, buf.device)
 end
 
 """
-    query_attribute(buf::HIPUnifiedBuffer, attribute::HIP.hipMemRangeAttribute)
+    query_attribute(buf::UnifiedMemory, attribute::HIP.hipMemRangeAttribute)
 
 Query attributes of unified memory range.
 
@@ -324,7 +363,7 @@ Returns the attribute value.
 
 See: https://rocm.docs.amd.com/projects/HIP/en/latest/reference/hip_runtime_api/modules/memory_management/unified_memory_reference.html#_CPPv423hipMemRangeGetAttributePvm20hipMemRangeAttribute_tPvm
 """
-function query_attribute(buf::HIPUnifiedBuffer, attribute::HIP.hipMemRangeAttribute)
+function query_attribute(buf::UnifiedMemory, attribute::HIP.hipMemRangeAttribute)
     buf.ptr == C_NULL && error("Cannot query attributes of NULL pointer")
 
     # Different attributes return different types
@@ -349,27 +388,7 @@ function query_attribute(buf::HIPUnifiedBuffer, attribute::HIP.hipMemRangeAttrib
     end
 end
 
-# download!(::Ptr, ::HIPBuffer)
-transfer!(dst::HostBuffer, src::HIPBuffer, sz::Int; stream::HIP.HIPStream) =
-    HIP.memcpy(dst, src, sz, HIP.hipMemcpyDeviceToHost, stream)
-
-# upload!(::HIPBuffer, ::Ptr)
-transfer!(dst::HIPBuffer, src::HostBuffer, sz::Int; stream::HIP.HIPStream) =
-    HIP.memcpy(dst, src, sz, HIP.hipMemcpyHostToDevice, stream)
-
-Base.convert(::Type{Ptr{T}}, buf::HostBuffer) where T = convert(Ptr{T}, buf.ptr)
-
-@inline device_ptr(buf::HostBuffer) = buf.dev_ptr
-
-function free(buf::HostBuffer; kwargs...)
-    buf.own || return
-    buf.ptr == C_NULL && return
-    unpin(buf.ptr)
-    # TODO
-    # call HIP.hipHostFree(buf) if memory was allocated via hipHostMalloc
-    # or is unpinning enough?
-    return
-end
+## memory utilities
 
 function get_device_ptr(ptr::Ptr{Cvoid})
     ptr == C_NULL && return C_NULL
@@ -451,13 +470,13 @@ function unsafe_copy3d!(
     dstPos = HIP.hipPos((dstPos[1] - 1) * sizeof(T), dstPos[2] - 1, dstPos[3] - 1)
 
     extent = HIP.hipExtent(width * sizeof(T), height, depth)
-    kind = if D <: HIPBuffer && S <: HIPBuffer
+    kind = if D <: DeviceMemory && S <: DeviceMemory
         HIP.hipMemcpyDeviceToDevice
-    elseif D <: HIPBuffer && S <: HostBuffer
+    elseif D <: DeviceMemory && S <: HostMemory
         HIP.hipMemcpyHostToDevice
-    elseif D <: HostBuffer && S <: HIPBuffer
+    elseif D <: HostMemory && S <: DeviceMemory
         HIP.hipMemcpyDeviceToHost
-    elseif D <: HostBuffer && S <: HostBuffer
+    elseif D <: HostMemory && S <: HostMemory
         HIP.hipMemcpyHostToHost
     end
 
@@ -471,3 +490,9 @@ function unsafe_copy3d!(
     async || AMDGPU.synchronize(stream)
     return dst
 end
+
+## backward compatibility aliases
+
+const HIPBuffer = DeviceMemory
+const HostBuffer = HostMemory
+const HIPUnifiedBuffer = UnifiedMemory

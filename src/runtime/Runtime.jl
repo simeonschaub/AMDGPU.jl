@@ -19,20 +19,7 @@ const RT_EXITING = Ref{Bool}(false)
 
 include("error.jl")
 include("dims.jl")
-
-module Mem
-    using Preferences
-
-    import AMDGPU
-    import AMDGPU: HIP, Runtime
-    import .HIP: HIPDevice, HIPContext
-    import .Runtime: ROCDim, ROCDim3
-
-    abstract type AbstractAMDBuffer end
-
-    include(joinpath("memory", "utils.jl"))
-    include(joinpath("memory", "hip.jl"))
-end
+include("memory.jl")
 
 include("execution.jl")
 include("hip-execution.jl")

@@ -4,7 +4,7 @@ using AMDGPU.HIP
 @testset "Unified Memory" begin
 
 @testset "Allocation and deallocation" begin
-    B = AMDGPU.Runtime.Mem.HIPUnifiedBuffer
+    B = AMDGPU.Runtime.Mem.UnifiedMemory
     x = ROCArray{Float32, 2, B}(undef, 16, 12)
     @test size(x) == (16, 12)
     @test x.buf[].mem isa B
@@ -12,7 +12,7 @@ using AMDGPU.HIP
 end
 
 @testset "Host and device access" begin
-    B = AMDGPU.Runtime.Mem.HIPUnifiedBuffer
+    B = AMDGPU.Runtime.Mem.UnifiedMemory
     x = ROCArray{Float32, 1, B}(undef, 16)
 
     x .= 1.0f0
@@ -25,7 +25,7 @@ end
 @testset "Memory advise" begin
     dev = AMDGPU.device()
     if HIP.attribute(dev, HIP.hipDeviceAttributeManagedMemory) == 1
-        B = AMDGPU.Runtime.Mem.HIPUnifiedBuffer
+        B = AMDGPU.Runtime.Mem.UnifiedMemory
         x = ROCArray{Float32, 1, B}(undef, 1024)
         buf = x.buf[].mem
 
@@ -40,7 +40,7 @@ end
 end
 
 @testset "Prefetching" begin
-    B = AMDGPU.Runtime.Mem.HIPUnifiedBuffer
+    B = AMDGPU.Runtime.Mem.UnifiedMemory
     x = ROCArray{Float32, 1, B}(undef, 1024)
     buf = x.buf[].mem
 
@@ -50,7 +50,7 @@ end
 end
 
 @testset "Preferred location" begin
-    B = AMDGPU.Runtime.Mem.HIPUnifiedBuffer
+    B = AMDGPU.Runtime.Mem.UnifiedMemory
     x = ROCArray{Float32, 1, B}(undef, 512)
     buf = x.buf[].mem
 
@@ -60,7 +60,7 @@ end
 end
 
 @testset "Coarse-grain coherency" begin
-    B = AMDGPU.Runtime.Mem.HIPUnifiedBuffer
+    B = AMDGPU.Runtime.Mem.UnifiedMemory
     x = ROCArray{Float32, 1, B}(undef, 256)
     buf = x.buf[].mem
 
@@ -72,7 +72,7 @@ end
 end
 
 @testset "Interop with HIPBuffer" begin
-    B = AMDGPU.Runtime.Mem.HIPUnifiedBuffer
+    B = AMDGPU.Runtime.Mem.UnifiedMemory
     x = ROCArray{Float32, 1, B}(undef, 32)
     y = AMDGPU.ones(Float32, 32)
 
@@ -85,7 +85,7 @@ end
 end
 
 @testset "Broadcasting" begin
-    B = AMDGPU.Runtime.Mem.HIPUnifiedBuffer
+    B = AMDGPU.Runtime.Mem.UnifiedMemory
     x = ROCArray{Float32, 1, B}(undef, 64)
     y = ROCArray{Float32, 1, B}(undef, 64)
 
@@ -96,7 +96,7 @@ end
 end
 
 @testset "Reduction operations" begin
-    B = AMDGPU.Runtime.Mem.HIPUnifiedBuffer
+    B = AMDGPU.Runtime.Mem.UnifiedMemory
     x = ROCArray{Float32, 1, B}(undef, 128)
 
     x .= 1.0f0
@@ -106,7 +106,7 @@ end
 end
 
 @testset "View operations" begin
-    B = AMDGPU.Runtime.Mem.HIPUnifiedBuffer
+    B = AMDGPU.Runtime.Mem.UnifiedMemory
     x = ROCArray{Float32, 1, B}(undef, 16)
 
     x .= 1.0f0:16.0f0
@@ -118,7 +118,7 @@ end
 end
 
 @testset "Multidimensional arrays" begin
-    B = AMDGPU.Runtime.Mem.HIPUnifiedBuffer
+    B = AMDGPU.Runtime.Mem.UnifiedMemory
     x = ROCArray{Float32, 3, B}(undef, 4, 8, 16)
 
     x .= 1.0f0
@@ -127,7 +127,7 @@ end
 end
 
 @testset "resize!" begin
-    B = AMDGPU.Runtime.Mem.HIPUnifiedBuffer
+    B = AMDGPU.Runtime.Mem.UnifiedMemory
     x = ROCArray{Int, 1, B}(undef, 10)
 
     x .= 1:10
@@ -140,7 +140,7 @@ end
 end
 
 @testset "unsafe_wrap(Array, ::ROCArray)" begin
-    B = AMDGPU.Runtime.Mem.HIPUnifiedBuffer
+    B = AMDGPU.Runtime.Mem.UnifiedMemory
 
     # Test with unified memory
     x = ROCArray{Float32, 1, B}(undef, 100)
@@ -189,7 +189,7 @@ end
 end
 
 @testset "Scalar indexing" begin
-    B = AMDGPU.Runtime.Mem.HIPUnifiedBuffer
+    B = AMDGPU.Runtime.Mem.UnifiedMemory
 
     # Test scalar getindex with unified memory
     x = ROCArray{Float32, 1, B}(undef, 100)
@@ -257,7 +257,7 @@ end
     if KA.supports_unified(backend)
         # Test unified allocate with kwarg
         x = KA.allocate(backend, Float32, (16, 16); unified=true)
-        @test x isa ROCArray{Float32, 2, AMDGPU.Runtime.Mem.HIPUnifiedBuffer}
+        @test x isa ROCArray{Float32, 2, AMDGPU.Runtime.Mem.UnifiedMemory}
         @test size(x) == (16, 16)
 
         # Test basic operations with unified memory

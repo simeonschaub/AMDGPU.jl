@@ -33,6 +33,8 @@ export ROCArray, ROCVector, ROCMatrix, ROCVecOrMat
 export DenseROCArray, DenseROCVector, DenseROCMatrix, DenseROCVecOrMat,
        StridedROCArray, StridedROCVector, StridedROCMatrix, StridedROCVecOrMat,
        AnyROCArray, AnyROCVector, AnyROCMatrix, AnyROCVecOrMat
+export ROCPtr, ROC_NULL, PtrOrROCPtr, ROCArrayPtr, ROCRef
+export DeviceMemory, HostMemory, UnifiedMemory
 
 struct LockedObject{T}
     lock::ReentrantLock
@@ -57,9 +59,10 @@ include("cache.jl")
 
 include("runtime/Runtime.jl")
 import .Runtime
-import .Runtime: Mem, ROCDim, ROCDim3
 
+include("pointer.jl")
 include("memory.jl")
+include("refpointer.jl")
 
 Base.Experimental.@MethodTable(method_table)
 

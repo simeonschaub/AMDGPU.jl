@@ -1,4 +1,4 @@
-# hash(HIPDevice) => HostBuffer
+# hash(HIPDevice) => HostMemory
 const GLOBAL_EXCEPTION_INFO = Dict{UInt, Mem.HostBuffer}()
 
 # TODO RT_LOCK?

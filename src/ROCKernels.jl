@@ -38,7 +38,7 @@ KA.supports_unified(::ROCBackend) = true
 
 function KA.allocate(backend::ROCBackend, ::Type{T}, dims::Tuple; unified::Bool=false) where T
     if unified
-        return AMDGPU.ROCArray{T, length(dims), AMDGPU.Mem.HIPUnifiedBuffer}(undef, dims)
+        return AMDGPU.ROCArray{T, length(dims), AMDGPU.Mem.UnifiedMemory}(undef, dims)
     else
         return AMDGPU.ROCArray{T}(undef, dims)
     end
