@@ -220,7 +220,7 @@ end
 function stream_ordered(dev::HIPDevice)
     devidx = deviceid(dev) + 1
     return @memoize devidx::Int maxlen = ndevices() begin
-        AMDGPU.runtime_version() >= v"5.3" && memory_pools_supported(dev) &&
+        memory_pools_supported(dev) &&
             get(ENV, "JULIA_AMDGPU_MEMORY_POOL", "hip") == "hip"
     end::Bool
 end

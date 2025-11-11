@@ -87,7 +87,7 @@ function HostCallHolder(
     maxlat = DEFAULT_HOSTCALL_LATENCY,
 )
     signal_ref = Ref{HSA.Signal}()
-    HSA.signal_create(1, 0, C_NULL, signal_ref) |> Runtime.check
+    HSA.signal_create(1, 0, C_NULL, signal_ref) |> check
     signal = signal_ref[]
 
     hc = HostCall(rettype, argtypes, signal.handle; buf_len)
@@ -102,7 +102,7 @@ function HostCallHolder(
         try
             while true
                 if !hostcall_host_wait(signal, finish_ref; maxlat, timeout)
-                    Runtime.RT_EXITING[] && break
+                    RT_EXITING[] && break
                     finish_ref[] && break
                     throw(HostCallException("Timeout on signal $signal"))
                 end
@@ -149,7 +149,7 @@ function HostCallHolder(
                             src_ptr = reinterpret(Ptr{Cvoid},
                                 Base.unsafe_convert(Ptr{rettype}, ret_ref))
                             HSA.memory_copy(
-                                ret_ptr, src_ptr, sizeof(ret)) |> Runtime.check
+                                ret_ptr, src_ptr, sizeof(ret)) |> check
                         end
 
                         args_buf_ptr = reinterpret(Ptr{Ptr{Cvoid}}, hc.buf_ptr)
@@ -174,7 +174,7 @@ function HostCallHolder(
         finally
             # We need to destroy HSA signal, but first we need to ensure
             # that the device is no longer using it.
-            while !Runtime.RT_EXITING[]
+            while !RT_EXITING[]
                 prev = host_signal_load(signal)
                 not_used =
                     prev == READY_SENTINEL ||
@@ -182,7 +182,7 @@ function HostCallHolder(
                     prev == DEVICE_ERR_SENTINEL
                 not_used && break
             end
-            HSA.signal_destroy(signal) |> Runtime.check
+            HSA.signal_destroy(signal) |> check
         end
         return
     end
@@ -190,14 +190,14 @@ function HostCallHolder(
 end
 
 function free!(holder::HostCallHolder)
-    if !Runtime.RT_EXITING[]
+    if !RT_EXITING[]
         buf_ptr = reinterpret(Ptr{Cvoid}, holder.hc.buf_ptr)
         HIP.hipHostFree(buf_ptr)
         Mem.free.(holder.ret_bufs)
     end
 end
 
-Adapt.adapt(to::Runtime.Adaptor, hc::HostCallHolder) = hc.hc
+Adapt.adapt(to::Adaptor, hc::HostCallHolder) = hc.hc
 
 non_continuous!(hc::HostCallHolder) = hc.continuous[] = false
 
@@ -212,7 +212,7 @@ function hostcall_host_wait(
     res::Bool = false
     start_time = time_ns()
 
-    while !Runtime.RT_EXITING[]
+    while !RT_EXITING[]
         finish_ref[] && break
         prev = host_signal_load(signal_handle)
 

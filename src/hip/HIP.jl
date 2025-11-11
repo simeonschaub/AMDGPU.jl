@@ -8,13 +8,14 @@ import PrettyTables
 
 import ..AMDGPU
 import ..AMDGPU.libhip
-import .AMDGPU: @check, check
+import .AMDGPU: @check, check, device, device!
 
-import GPUToolbox: @gcsafe_ccall
+using GPUToolbox: @gcsafe_ccall, LazyInitialized, @enum_without_prefix
+using Printf: @printf
 
 include("libhip.jl")
 include("error.jl")
-include("device.jl")
+include("devices.jl")
 
 hipMemLocation(type::hipMemLocationType, id::Integer) = reinterpret(hipMemLocation, (type, Cint(id)))
 function hipMemPoolProps(
@@ -46,20 +47,10 @@ end
 const CONTEXTS = AMDGPU.LockedObject(Dict{HIPDevice,HIPContext}())
 
 function HIPContext(device::HIPDevice)
-    contexts = CONTEXTS.payload
-
-    ctx = get(contexts, device, nothing)
-    ctx ≡ nothing || return ctx
-
-    Base.@lock CONTEXTS.lock begin
-        get!(contexts, device) do
-            ctx_ref = Ref{hipCtx_t}()
-            hipCtxCreate(ctx_ref, Cuint(0), device.device)
-            ctx = HIPContext(ctx_ref[], true)
-            device!(device)
-            return ctx
-        end
-    end
+    ctx_ref = Ref{hipCtx_t}()
+    hipCtxCreate(ctx_ref, Cuint(0), device.handle)
+    ctx = HIPContext(ctx_ref[], true)
+    return ctx
 end
 
 HIPContext(device_id::Integer) = HIPContext(HIPDevice(device_id))
@@ -68,6 +59,7 @@ HIPContext() = HIPContext(device())
 Base.unsafe_convert(::Type{hipCtx_t}, context::HIPContext) = context.context
 Base.:(==)(a::HIPContext, b::HIPContext) = a.context == b.context
 Base.hash(c::HIPContext, h::UInt) = hash(c.context, h)
+AMDGPU.isvalid(context::HIPContext) = context.valid
 
 function Base.show(io::IO, context::HIPContext)
     print(io, "HIPContext(ptr=$(repr(UInt64(context.context))))")

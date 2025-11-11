@@ -135,3 +135,11 @@ function library_state(
     end
     return state
 end
+
+@inline function prepare_state(state = task_local_state!())
+    hip_ctx = Ref{HIP.hipCtx_t}()
+    HIP.hipCtxGetCurrent(hip_ctx)
+    state.context.context != hip_ctx[] &&
+        HIP.context!(state.context)
+    return
+end

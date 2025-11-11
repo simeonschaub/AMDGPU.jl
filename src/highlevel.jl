@@ -21,7 +21,14 @@ function device(context::HIPContext)
     end
 end
 
-device(stream::HIPStream) = stream.device
+function device(stream::HIPStream)
+    # Get the device associated with the stream's context
+    if stream.ctx === nothing
+        return device()
+    end
+    return device(stream.ctx)
+end
+
 device(idx::Integer) = devices()[idx]
 
 """
@@ -37,7 +44,7 @@ function synchronize(stm::HIPStream = stream();
     blocking::Bool = false, stop_hostcalls::Bool = false,
 )
     HIP.synchronize(stm; blocking)
-    throw_if_exception(stm.device)
+    throw_if_exception(device(stm))
     stop_hostcalls || return
 
     # Stop any running global hostcall.
@@ -90,7 +97,7 @@ input object `x` as-is.
 Do not add methods to this function, but instead extend the underlying Adapt.jl package and
 register methods for the the `AMDGPU.Adaptor` type.
 """
-rocconvert(arg) = adapt(Runtime.Adaptor(), arg)
+rocconvert(arg) = adapt(Adaptor(), arg)
 
 const MACRO_KWARGS = [:launch]
 const COMPILER_KWARGS = [:name, :unsafe_fp_atomics, :wavefrontsize64]
@@ -109,7 +116,7 @@ Several keyword arguments are supported:
     calling it and passing arguments.
 - Arguments that influence kernel compilation, see
     [`AMDGPU.Compiler.hipfunction`](@ref).
-- Arguments that influence kernel launch, see [`AMDGPU.Runtime.HIPKernel`](@ref).
+- Arguments that influence kernel launch, see [`AMDGPU.HIPKernel`](@ref).
 """
 macro roc(ex...)
     # destructure the `@roc` expression
@@ -167,7 +174,7 @@ macro roc(ex...)
     end)
 end
 
-launch_configuration(kern::Runtime.HIPKernel; shmem::Integer = 0, max_block_size::Integer = 0) =
+launch_configuration(kern::HIPKernel; shmem::Integer = 0, max_block_size::Integer = 0) =
     HIP.launch_configuration(kern.fun; shmem, max_block_size)
 
 """

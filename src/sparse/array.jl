@@ -552,25 +552,25 @@ end
 
 # interop with device arrays
 
-Adapt.adapt_structure(to::AMDGPU.Runtime.Adaptor, x::ROCSparseVector) =
+Adapt.adapt_structure(to::AMDGPU.Adaptor, x::ROCSparseVector) =
     ROCSparseDeviceVector(adapt(to, x.iPtr), adapt(to, x.nzVal), length(x), x.nnz)
 
-Adapt.adapt_structure(to::AMDGPU.Runtime.Adaptor, x::ROCSparseMatrixCSR) =
+Adapt.adapt_structure(to::AMDGPU.Adaptor, x::ROCSparseMatrixCSR) =
     ROCSparseDeviceMatrixCSR(
         adapt(to, x.rowPtr), adapt(to, x.colVal), adapt(to, x.nzVal),
         size(x), x.nnz)
 
-Adapt.adapt_structure(to::AMDGPU.Runtime.Adaptor, x::ROCSparseMatrixCSC) =
+Adapt.adapt_structure(to::AMDGPU.Adaptor, x::ROCSparseMatrixCSC) =
     ROCSparseDeviceMatrixCSC(
         adapt(to, x.colPtr), adapt(to, x.rowVal), adapt(to, x.nzVal),
         size(x), x.nnz)
 
-Adapt.adapt_structure(to::AMDGPU.Runtime.Adaptor, x::ROCSparseMatrixBSR) =
+Adapt.adapt_structure(to::AMDGPU.Adaptor, x::ROCSparseMatrixBSR) =
     ROCSparseDeviceMatrixBSR(
         adapt(to, x.rowPtr), adapt(to, x.colVal), adapt(to, x.nzVal),
         size(x), x.blockDim, x.dir, x.nnzb)
 
-Adapt.adapt_structure(to::AMDGPU.Runtime.Adaptor, x::ROCSparseMatrixCOO) =
+Adapt.adapt_structure(to::AMDGPU.Adaptor, x::ROCSparseMatrixCOO) =
     ROCSparseDeviceMatrixCOO(
         adapt(to, x.rowInd), adapt(to, x.colInd), adapt(to, x.nzVal),
         size(x), x.nnz)

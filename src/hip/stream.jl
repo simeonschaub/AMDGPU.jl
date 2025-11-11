@@ -1,186 +1,176 @@
-const use_nonblocking_synchronize = Preferences.@load_preference(
-    "nonblocking_synchronization", true)
+# Stream management
 
+export
+    HIPStream, default_stream, legacy_stream, per_thread_stream,
+    unique_id, priority, priority_range, synchronize, device_synchronize
+
+"""
+    HIPStream(; flags=STREAM_DEFAULT, priority=nothing)
+
+Create a HIP stream.
+"""
 mutable struct HIPStream
-    stream::hipStream_t
-    priority::Symbol
-    device::HIPDevice
-    ctx::HIPContext
-
+    const handle::HIP.hipStream_t
     Base.@atomic valid::Bool
-end
 
-"""
-    HIPStream(priority::Symbol = :normal)
+    const ctx::Union{Nothing,HIPContext}
 
-# Arguments:
-
-- `priority::Symbol`: Priority of the stream: `:normal`, `:high` or `:low`.
-
-Create HIPStream with given priority.
-Device is the default device that's currently in use.
-"""
-function HIPStream(priority::Symbol = :normal)
-    priority_int = symbol_to_priority(priority)
-
-    stream_ref = Ref{hipStream_t}()
-    hipStreamCreateWithPriority(stream_ref, 0, priority_int)
-    d = device()
-    stream = HIPStream(stream_ref[], priority, d, HIPContext(d), true)
-    return finalizer(stream) do s
-        AMDGPU.context!(s.ctx) do
-            hipStreamDestroy(s.stream)
-        end
-        Base.@atomic s.valid = false
-    end
-end
-
-isvalid(s::HIPStream) = s.valid
-
-default_stream() = HIPStream(C_NULL, :normal, device(), HIPContext(), true)
-
-"""
-    HIPStream(stream::hipStream_t)
-
-Create HIPStream from `hipStream_t` handle.
-Device is the default device that's currently in use.
-"""
-function HIPStream(stream::hipStream_t)
-    d = device()
-    HIPStream(stream, priority(stream), d, HIPContext(d), true)
-end
-
-function isdone(stream::HIPStream)
-    query = hipStreamQuery(stream)
-    if query == hipSuccess
-        return true
-    elseif query == hipErrorNotReady
-        return false
-    else
-        throw(HIPError(query))
-    end
-end
-
-function _low_latency_synchronize(stream::HIPStream)
-    isdone(stream) && return true
-
-    # spin (initially without yielding to minimize latency)
-    spins = 0
-    while spins < 256
-        if spins < 32
-            ccall(:jl_cpu_pause, Cvoid, ())
-            # Temporary solution before we have gc transition support in codegen.
-            ccall(:jl_gc_safepoint, Cvoid, ())
+    function HIPStream(; priority::Union{Nothing,Integer}=nothing)
+        handle_ref = Ref{HIP.hipStream_t}()
+        if priority === nothing
+            HIP.hipStreamCreate(handle_ref)
         else
-            yield()
+            priority in priority_range() || throw(ArgumentError("Priority is out of range"))
+            HIP.hipStreamCreateWithPriority(handle_ref, flags, priority)
         end
-        isdone(stream) && return true
-        spins += 1
+
+        ctx = HIPContext()
+        obj = new(handle_ref[], true, ctx)
+        finalizer(unsafe_destroy!, obj)
+        return obj
     end
-    return false
+
+    global default_stream() = new(convert(HIP.hipStream_t, C_NULL), true)
+
+    global legacy_stream() = new(convert(HIP.hipStream_t, C_NULL), true)
+
+    global per_thread_stream() = new(HIP.hipStreamPerThread, true)
 end
 
-function launch(f::Base.Callable; stream::HIPStream)
-    # Condition object is embedded in a task, Julia scheduler keeps it alive.
-    cond = Base.AsyncCondition() do async_cond
-        f()
-        close(async_cond)
+"""
+    default_stream()
+
+Return the default stream.
+
+!!! note
+
+    It is generally better to use `stream()` to get a stream object that's local to the
+    current task. That way, operations scheduled in other tasks can overlap.
+"""
+default_stream()
+
+"""
+    legacy_stream()
+
+Return a special object to use use an implicit stream with legacy synchronization behavior.
+
+You can use this stream to perform operations that should block on all streams (with the
+exception of streams created with `STREAM_NON_BLOCKING`). This matches the old behavior.
+"""
+legacy_stream()
+
+"""
+    per_thread_stream()
+
+Return a special object to use an implicit stream with per-thread synchronization behavior.
+This stream object is normally meant to be used with APIs that do not have per-thread
+versions of their APIs (i.e. without a `ptsz` or `ptds` suffix).
+
+!!! note
+
+    It is generally not needed to use this type of stream. With AMDGPU.jl, each task already
+    gets its own non-blocking stream, and multithreading in Julia is typically
+    accomplished using tasks.
+"""
+per_thread_stream()
+
+Base.unsafe_convert(::Type{HIP.hipStream_t}, s::HIPStream) = s.handle
+
+Base.:(==)(a::HIPStream, b::HIPStream) = a.handle == b.handle
+Base.hash(s::HIPStream, h::UInt) = hash(s.handle, h)
+
+@enum_without_prefix HIP.hipStreamCaptureMode hipStream
+
+function unsafe_destroy!(s::HIPStream)
+    @assert s.ctx !== nothing "Cannot destroy unassociated stream"
+    context!(s.ctx; skip_destroyed=true) do
+        HIP.hipStreamDestroy(s)
     end
-    callback = cglobal(:uv_async_send)
-    hipLaunchHostFunc(stream, callback, cond)
+    Base.@atomic s.valid = false
 end
-
-function nonblocking_synchronize(stream::HIPStream)
-    # Wait for an event signalled by HIP.
-    event = Base.Event()
-    launch(() -> notify(event); stream)
-
-    # If an error occurs, the callback may never fire.
-    # Create a timer to detect such cases.
-    dev = device()
-    timer = Timer(0; interval=1)
-
-    Base.@sync begin
-        # Launch timer.
-        Threads.@spawn try
-            device!(dev)
-            while true
-                try
-                    Base.wait(timer)
-                catch err
-                    err isa EOFError && break
-                    rethrow()
-                end
-                hipStreamQuery(stream) != hipErrorNotReady && break
-            end
-        finally
-            notify(event)
-        end
-        # Wait for `event`.
-        Threads.@spawn begin
-            Base.wait(event)
-            close(timer)
-        end
-    end
-    return
-end
-
-wait(stream::HIPStream) = hipStreamSynchronize(stream)
-
-function synchronize(stream::HIPStream; blocking::Bool = false)
-    if use_nonblocking_synchronize && !blocking
-        if !_low_latency_synchronize(stream)
-            nonblocking_synchronize(stream)
-            AMDGPU.maybe_collect(; blocking=true)
-        end
-    else
-        AMDGPU.maybe_collect(; blocking=true)
-    end
-    # Perform an actual API call even after non-blocking synchronization.
-    wait(stream)
-    return
-end
-
-Base.unsafe_convert(::Type{hipStream_t}, stream::HIPStream) = stream.stream
-Base.unsafe_convert(::Type{Ptr{Cvoid}}, stream::HIPStream) = Ptr{Cvoid}(stream.stream)
-Base.:(==)(a::HIPStream, b::HIPStream) = a.stream == b.stream
-Base.hash(s::HIPStream, h::UInt) = hash(s.stream, h)
 
 function Base.show(io::IO, stream::HIPStream)
-    print(io, "HIPStream(device=$(stream.device), ptr=$(repr(UInt64(stream.stream))), priority=$(stream.priority))")
+    print(io, "HIPStream(")
+    @printf(io, "%p", stream.handle)
+    if stream.ctx !== nothing
+        print(io, ", ", stream.ctx)
+    end
+    print(io, ")")
 end
 
-function Base.show(io::IO, mime::MIME{Symbol("text/plain")}, stream::HIPStream)
-    data = reshape([
-        "$(repr(UInt64(stream.stream)))",
-        "$(stream.priority)",
-        "$(stream.device)",
-    ], 1, :)
-    PrettyTables.pretty_table(io, data; header=["Ptr", "Priority", "Device"])
+function unique_id(s::HIPStream)
+    id_ref = Ref{Culonglong}()
+    HIP.hipStreamGetId(s, id_ref)
+    return id_ref[]
 end
 
-function priority_to_symbol(priority)
-    priority ==  0 && return :normal
-    priority == -1 && return :high
-    priority ==  1 && return :low
-    throw(ArgumentError("""
-    Invalid HIP priority: $priority.
-    Valid values are: 0, -1, 1.
-    """))
+"""
+    isvalid(s::HIPStream)
+
+Determines if the stream object is still valid, i.e., if it has not been garbage collected.
+This is only useful for use in finalizers, which do not guarantee order of execution (i.e.,
+a stream may have been destroyed before an object relying on it has).
+"""
+function isvalid(s::HIPStream)
+    return s.valid
 end
 
-function symbol_to_priority(priority::Symbol)
-    priority == :normal && return Cint(0)
-    priority == :high && return Cint(-1)
-    priority == :low && return Cint(1)
-    throw(ArgumentError("""
-    Invalid HIP priority symbol: $priority.
-    Valid values are: `:normal`, `:low`, `:high`.
-    """))
+"""
+    isdone(s::HIPStream)
+
+Return `false` if a stream is busy (has task running or queued)
+and `true` if that stream is free.
+"""
+function isdone(s::HIPStream)
+    res = unchecked_hipStreamQuery(s)
+    if res == ERROR_NOT_READY
+        return false
+    elseif res == SUCCESS
+        return true
+    else
+        throw_api_error(res)
+    end
 end
 
-function priority(stream::hipStream_t)
-    priority = Ref{Cint}()
-    hipStreamGetPriority(stream, priority)
-    priority_to_symbol(priority[])
+"""
+    synchronize([stream::HIPStream]; blocking::Bool=false)
+
+Wait until `stream` has finished executing, with `stream` defaulting to the stream
+associated with the current Julia task.
+
+The `blocking` parameter is provided for compatibility but currently ignored,
+as HIP stream synchronization is always blocking at the driver level.
+
+See also: [`device_synchronize`](@ref)
+"""
+function synchronize(stream::HIPStream=stream(); blocking::Bool=false)
+    HIP.hipStreamSynchronize(stream)
+    return
+end
+
+"""
+    priority_range()
+
+Return the valid range of stream priorities as a `StepRange` (with step size  1). The lower
+bound of the range denotes the least priority (typically 0), with the upper bound
+representing the greatest possible priority (typically -1).
+"""
+function priority_range()
+    least_ref = Ref{Cint}()
+    greatest_ref = Ref{Cint}()
+    HIP.hipDeviceGetStreamPriorityRange(least_ref, greatest_ref)
+    step = least_ref[] < greatest_ref[] ? 1 : -1
+    return least_ref[]:Cint(step):greatest_ref[]
+end
+
+
+"""
+    priority_range(s::HIPStream)
+
+Return the priority of a stream `s`.
+"""
+function priority(s::HIPStream)
+    priority_ref = Ref{Cint}()
+    HIP.hipStreamGetPriority(s, priority_ref)
+    return priority_ref[]
 end

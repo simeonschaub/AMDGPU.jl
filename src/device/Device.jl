@@ -10,10 +10,8 @@ import ..LinearAlgebra
 
 import ..HSA
 import ..HIP
-import ..Runtime
-using ..Runtime: HostMemory
 import ..AMDGPU
-import .AMDGPU: method_table
+using .AMDGPU: method_table, HostMemory, Adaptor
 import ..UnsafeAtomics
 
 include("addrspaces.jl")

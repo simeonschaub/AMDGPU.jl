@@ -8,9 +8,7 @@ using ..LLVM
 using Printf
 
 import ..AMDGPU
-import ..AMDGPU: AS
-import ..Runtime
-using ..Runtime: HostMemory
+import ..AMDGPU: AS, HostMemory, HIPKernel
 import ..Device
 import ..HIP
 

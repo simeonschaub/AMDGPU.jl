@@ -15,7 +15,7 @@ const HIPCompilerJob = CompilerJob{GCNCompilerTarget, HIPCompilerParams}
 const _hip_compiler_cache = Dict{HIP.HIPDevice, Dict{Any, HIP.HIPFunction}}()
 
 # hash(fun, hash(f, hash(tt))) => HIPKernel
-const _kernel_instances = Dict{UInt, Runtime.HIPKernel}()
+const _kernel_instances = Dict{UInt, HIPKernel}()
 # UInt (hash(job)) => Vector{Symbol} (global hostcall names)
 const _global_hostcalls = Dict{UInt, Vector{Symbol}}()
 
@@ -168,9 +168,9 @@ function hipfunction(f::F, tt::TT = Tuple{}; kwargs...) where {F <: Core.Functio
 
         h = hash(fun, hash(f, hash(tt)))
         kernel = get!(_kernel_instances, h) do
-            Runtime.HIPKernel{F, tt}(f, fun)
+            HIPKernel{F, tt}(f, fun)
         end
-        return kernel::Runtime.HIPKernel{F, tt}
+        return kernel::HIPKernel{F, tt}
     end
 end
 

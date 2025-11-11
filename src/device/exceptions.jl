@@ -75,7 +75,7 @@ end
 end
 
 function alloc_exception_info()
-    ei_ptr = Mem.HostBuffer(sizeof(ExceptionInfo), HIP.hipHostAllocDefault)
+    ei_ptr = HostMemory(sizeof(ExceptionInfo), HIP.hipHostAllocDefault)
     unsafe_store!(convert(Ptr{ExceptionInfo}, ei_ptr), ExceptionInfo())
     return ei_ptr
 end
