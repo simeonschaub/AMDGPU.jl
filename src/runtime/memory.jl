@@ -49,6 +49,9 @@ Base.show(io::IO, mem::DeviceMemory) =
 Base.convert(::Type{ROCPtr{T}}, mem::DeviceMemory) where {T} =
     convert(ROCPtr{T}, pointer(mem))
 
+Base.unsafe_convert(::Type{Ptr{T}}, mem::DeviceMemory) where {T} =
+    unsafe_convert(Ptr{T}, pointer(mem))
+
 """
     alloc(DeviceMemory, bytesize::Integer;
           [async=false], [stream::HIPStream], [pool::HIPMemoryPool])
@@ -297,7 +300,7 @@ for (fn, srcPtrTy, dstPtrTy) in (("hipMemcpyDtoHAsync", :ROCPtr, :Ptr),
     @eval function Base.unsafe_copyto!(dst::$dstPtrTy{T}, src::$srcPtrTy{T}, N::Integer;
                                        stream::HIPStream=stream(),
                                        async::Bool=false) where T
-        $(getproperty(HIP, Symbol(fn)))(dst, src, N*aligned_sizeof(T), stream)
+        $(getproperty(HIP, Symbol(fn)))(reinterpret(Ptr{Nothing}, dst), reinterpret(Ptr{Nothing}, src), N*aligned_sizeof(T), stream)
         async || synchronize(stream)
         return dst
     end
@@ -307,7 +310,7 @@ function Base.unsafe_copyto!(dst::ROCPtr{T}, src::ROCPtr{T}, N::Integer;
                              stream::HIPStream=stream(),
                              async::Bool=false) where T
     # HIP doesn't have separate peer copy, just use regular DtoD
-    HIP.hipMemcpyDtoDAsync(dst, src, N*aligned_sizeof(T), stream)
+    HIP.hipMemcpyDtoDAsync(reinterpret(Ptr{Nothing}, dst), reinterpret(Ptr{Nothing}, src), N*aligned_sizeof(T), stream)
     async || synchronize(stream)
     return dst
 end

@@ -56,6 +56,9 @@ Base.cconvert(::Type{<:ROCPtr}, x) = x
 # fallback for unsafe_convert
 Base.unsafe_convert(::Type{P}, x::ROCPtr) where {P<:ROCPtr} = convert(P, x)
 
+# in HIP, contrary to CUDA, ROCPtr can be converted to Ptr
+Base.unsafe_convert(::Type{Ptr{T}}, x::ROCPtr) where {T} = Base.bitcast(Ptr{T}, x)
+
 # from arrays
 Base.unsafe_convert(::Type{ROCPtr{S}}, a::AbstractArray{T}) where {S,T} =
     convert(ROCPtr{S}, Base.unsafe_convert(ROCPtr{T}, a))

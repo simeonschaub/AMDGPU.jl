@@ -58,7 +58,7 @@ end
 function validate_task_local_state(state::TaskLocalState)
     # NOTE: the context may be invalid if another task reset it (which we detect here
     #       since we can't touch other tasks' local state from `device_reset!`)
-    if !isvalid(state.context)
+    if !HIP.isvalid(state.context)
         device!(state.device)
         @inbounds state.streams[deviceid(state.device)+1] = nothing
     end
@@ -162,12 +162,12 @@ end
 
 @inline function context!(f::F, ctx::HIPContext; skip_destroyed::Bool=false) where {F<:Function}
     # @inline so that the kwarg method is inlined too and we can const-prop skip_destroyed
-    if isvalid(ctx)
+    if HIP.isvalid(ctx)
         old_ctx = context!(ctx)::Union{HIPContext,Nothing}
         try
             f()
         finally
-            if old_ctx !== nothing && old_ctx != ctx && isvalid(old_ctx)
+            if old_ctx !== nothing && old_ctx != ctx && HIP.isvalid(old_ctx)
                 context!(old_ctx)
             end
         end

@@ -11,7 +11,7 @@ import ..LinearAlgebra
 import ..HSA
 import ..HIP
 import ..AMDGPU
-using .AMDGPU: method_table, HostMemory, Adaptor
+using .AMDGPU: method_table, HostMemory, Adaptor, alloc
 import ..UnsafeAtomics
 
 include("addrspaces.jl")

@@ -59,7 +59,7 @@ HIPContext() = HIPContext(device())
 Base.unsafe_convert(::Type{hipCtx_t}, context::HIPContext) = context.context
 Base.:(==)(a::HIPContext, b::HIPContext) = a.context == b.context
 Base.hash(c::HIPContext, h::UInt) = hash(c.context, h)
-AMDGPU.isvalid(context::HIPContext) = context.valid
+isvalid(context::HIPContext) = context.valid
 
 function Base.show(io::IO, context::HIPContext)
     print(io, "HIPContext(ptr=$(repr(UInt64(context.context))))")

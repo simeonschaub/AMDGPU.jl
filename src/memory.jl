@@ -553,7 +553,7 @@ function Base.convert(::Type{ROCPtr{T}}, managed::Managed{M}) where {T, M}
 
     # accessing memory during stream capture: taint the memory so that we always synchronize
     state = active_state()
-    if is_capturing(state.stream)
+    if HIP.is_capturing(state.stream)
         managed.captured = true
     end
 
@@ -726,7 +726,7 @@ end
     if mem.async
         # stream-ordered allocations are not tied to a context. we always need to free them,
         # and if the owning context (or stream) was destroyed, use a new (or default) one.
-        if isvalid(mem.ctx) && isvalid(stream)
+        if HIP.isvalid(mem.ctx) && HIP.isvalid(stream)
             context!(mem.ctx) do
                 free(mem; stream)
             end

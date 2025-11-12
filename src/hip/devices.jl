@@ -2,7 +2,7 @@
 
 export
     HIPDevice, current_device, has_device,
-    name, deviceid, uuid, parent_uuid, totalmem, can_access_peer
+    name, deviceid, uuid, parent_uuid, totalmem, can_access_peer, gcn_arch
 
 """
     HIPDevice(ordinal::Integer)
@@ -10,16 +10,16 @@ export
 Get a handle to a compute device.
 """
 struct HIPDevice
-    handle::HIP.hipDevice_t
+    handle::hipDevice_t
 
     function HIPDevice(ordinal::Integer)
-        device_ref = Ref{HIP.hipDevice_t}()
-        HIP.hipDeviceGet(device_ref, ordinal)
+        device_ref = Ref{hipDevice_t}()
+        hipDeviceGet(device_ref, ordinal)
         new(device_ref[])
     end
 
     global function current_device()
-        device_ref = Ref{HIP.hipDevice_t}()
+        device_ref = Ref{hipDevice_t}()
         res = unchecked_hipCtxGetDevice(device_ref)
         res == ERROR_INVALID_CONTEXT && throw(UndefRefError())
         res != SUCCESS && throw_api_error(res)
@@ -27,7 +27,7 @@ struct HIPDevice
     end
 
     # for outer constructors
-    global _HIPDevice(handle::HIP.hipDevice_t) = new(handle)
+    global _HIPDevice(handle::hipDevice_t) = new(handle)
 end
 
 """
@@ -42,10 +42,10 @@ Returns the current device.
 """
 current_device()
 
-const DEVICE_CPU = _HIPDevice(HIP.hipDevice_t(-1))
-const DEVICE_INVALID = _HIPDevice(HIP.hipDevice_t(-2))
+const DEVICE_CPU = _HIPDevice(hipDevice_t(-1))
+const DEVICE_INVALID = _HIPDevice(hipDevice_t(-2))
 
-Base.convert(::Type{HIP.hipDevice_t}, dev::HIPDevice) = dev.handle
+Base.convert(::Type{hipDevice_t}, dev::HIPDevice) = dev.handle
 
 function Base.show(io::IO, ::MIME"text/plain", dev::HIPDevice)
   print(io, "HIPDevice($(dev.handle)): ")
@@ -66,7 +66,7 @@ Returns an identifier string for the device.
 function name(dev::HIPDevice)
     buflen = 256
     buf = Vector{Cchar}(undef, buflen)
-    HIP.hipDeviceGetName(pointer(buf), buflen, dev)
+    hipDeviceGetName(pointer(buf), buflen, dev)
     buf[end] = 0
     return GC.@preserve buf unsafe_string(pointer(buf))
 end
@@ -77,11 +77,11 @@ end
 Get the ID number of the current device of execution. This is a 0-indexed number,
 corresponding to the device ID as known to HIP.
 """
-deviceid(dev::HIPDevice) = Int(convert(HIP.hipDevice_t, dev))
+deviceid(dev::HIPDevice) = Int(convert(hipDevice_t, dev))
 
 function uuid(dev::HIPDevice)
-    uuid_ref = Ref{HIP.hipUUID}()
-    HIP.hipDeviceGetUuid(uuid_ref, dev)
+    uuid_ref = Ref{hipUUID}()
+    hipDeviceGetUuid(uuid_ref, dev)
     Base.UUID(reinterpret(UInt128, reverse([uuid_ref[].bytes...]))[])
 end
 
@@ -97,14 +97,28 @@ Returns the total amount of memory (in bytes) on the device.
 """
 function totalmem(dev::HIPDevice)
     mem_ref = Ref{Csize_t}()
-    HIP.hipDeviceTotalMem(mem_ref, dev)
+    hipDeviceTotalMem(mem_ref, dev)
     return mem_ref[]
 end
 
 function can_access_peer(dev::HIPDevice, peer::HIPDevice)
     val_ref = Ref{Cint}()
-    HIP.hipDeviceCanAccessPeer(val_ref, dev, peer)
+    hipDeviceCanAccessPeer(val_ref, dev, peer)
     return val_ref[] == 1
+end
+
+"""
+    gcn_arch(dev::HIPDevice)
+
+Returns the GCN architecture name for the device as a string (e.g., "gfx90a", "gfx1030").
+"""
+function gcn_arch(dev::HIPDevice)
+    props = Ref{hipDeviceProp_t}()
+    hipGetDevicePropertiesR0600(props, dev)
+    return GC.@preserve props begin
+        ptr = Base.unsafe_convert(Ptr{hipDeviceProp_t}, props).gcnArchName
+        unsafe_string(convert(Ptr{Cchar}, ptr))
+    end
 end
 
 
@@ -143,7 +157,7 @@ end
 
 function ndevices()
     count_ref = Ref{Cint}()
-    HIP.hipGetDeviceCount(count_ref)
+    hipGetDeviceCount(count_ref)
     return count_ref[]
 end
 
@@ -157,20 +171,20 @@ export attribute, warpsize, capability, memory_pools_supported, unified_addressi
 
 Returns information about the device.
 """
-function attribute(dev::HIPDevice, code::HIP.hipDeviceAttribute_t)
+function attribute(dev::HIPDevice, code::hipDeviceAttribute_t)
     value_ref = Ref{Cint}()
-    HIP.hipDeviceGetAttribute(value_ref, code, dev)
+    hipDeviceGetAttribute(value_ref, code, dev)
     return value_ref[]
 end
 
-@enum_without_prefix HIP.hipDeviceAttribute_t hipDevice
+@enum_without_prefix hipDeviceAttribute_t hipDevice
 
 """
-    warpsize(dev::HIPDevice)
+    wavefrontsize(dev::HIPDevice)
 
-Returns the warp size (in threads) of the device.
+Returns the wavefront size (in threads) of the device.
 """
-warpsize(dev::HIPDevice) = attribute(dev, AttributeWarpSize)
+wavefrontsize(dev::HIPDevice) = attribute(dev, AttributeWarpSize)
 
 """
     capability(dev::HIPDevice)
@@ -189,6 +203,8 @@ unified_addressing(dev::HIPDevice) =
     attribute(dev, AttributeManagedMemory) == 1
 
 
+
+
 ## p2p attributes
 
 export p2p_attribute
@@ -198,10 +214,10 @@ export p2p_attribute
 
 Returns information about the P2P relationship between a pair of devices.
 """
-function p2p_attribute(src::HIPDevice, dst::HIPDevice, code::HIP.hipDeviceP2PAttr)
+function p2p_attribute(src::HIPDevice, dst::HIPDevice, code::hipDeviceP2PAttr)
     value_ref = Ref{Cint}()
-    HIP.hipDeviceGetP2PAttribute(value_ref, code, src, dst)
+    hipDeviceGetP2PAttribute(value_ref, code, src, dst)
     return value_ref[]
 end
 
-@enum_without_prefix HIP.hipDeviceP2PAttr hipDevP2PAttr
+@enum_without_prefix hipDeviceP2PAttr hipDevP2PAttr

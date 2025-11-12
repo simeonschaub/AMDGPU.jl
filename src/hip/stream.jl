@@ -10,18 +10,18 @@ export
 Create a HIP stream.
 """
 mutable struct HIPStream
-    const handle::HIP.hipStream_t
+    const handle::hipStream_t
     Base.@atomic valid::Bool
 
     const ctx::Union{Nothing,HIPContext}
 
     function HIPStream(; priority::Union{Nothing,Integer}=nothing)
-        handle_ref = Ref{HIP.hipStream_t}()
+        handle_ref = Ref{hipStream_t}()
         if priority === nothing
-            HIP.hipStreamCreate(handle_ref)
+            hipStreamCreate(handle_ref)
         else
             priority in priority_range() || throw(ArgumentError("Priority is out of range"))
-            HIP.hipStreamCreateWithPriority(handle_ref, flags, priority)
+            hipStreamCreateWithPriority(handle_ref, flags, priority)
         end
 
         ctx = HIPContext()
@@ -30,11 +30,11 @@ mutable struct HIPStream
         return obj
     end
 
-    global default_stream() = new(convert(HIP.hipStream_t, C_NULL), true)
+    global default_stream() = new(convert(hipStream_t, C_NULL), true)
 
-    global legacy_stream() = new(convert(HIP.hipStream_t, C_NULL), true)
+    global legacy_stream() = new(convert(hipStream_t, C_NULL), true)
 
-    global per_thread_stream() = new(HIP.hipStreamPerThread, true)
+    global per_thread_stream() = new(hipStreamPerThread, true)
 end
 
 """
@@ -74,17 +74,17 @@ versions of their APIs (i.e. without a `ptsz` or `ptds` suffix).
 """
 per_thread_stream()
 
-Base.unsafe_convert(::Type{HIP.hipStream_t}, s::HIPStream) = s.handle
+Base.unsafe_convert(::Type{hipStream_t}, s::HIPStream) = s.handle
 
 Base.:(==)(a::HIPStream, b::HIPStream) = a.handle == b.handle
 Base.hash(s::HIPStream, h::UInt) = hash(s.handle, h)
 
-@enum_without_prefix HIP.hipStreamCaptureMode hipStream
+@enum_without_prefix hipStreamCaptureMode hipStream
 
 function unsafe_destroy!(s::HIPStream)
     @assert s.ctx !== nothing "Cannot destroy unassociated stream"
     context!(s.ctx; skip_destroyed=true) do
-        HIP.hipStreamDestroy(s)
+        hipStreamDestroy(s)
     end
     Base.@atomic s.valid = false
 end
@@ -100,7 +100,7 @@ end
 
 function unique_id(s::HIPStream)
     id_ref = Ref{Culonglong}()
-    HIP.hipStreamGetId(s, id_ref)
+    hipStreamGetId(s, id_ref)
     return id_ref[]
 end
 
@@ -144,7 +144,7 @@ as HIP stream synchronization is always blocking at the driver level.
 See also: [`device_synchronize`](@ref)
 """
 function synchronize(stream::HIPStream=stream(); blocking::Bool=false)
-    HIP.hipStreamSynchronize(stream)
+    hipStreamSynchronize(stream)
     return
 end
 
@@ -158,7 +158,7 @@ representing the greatest possible priority (typically -1).
 function priority_range()
     least_ref = Ref{Cint}()
     greatest_ref = Ref{Cint}()
-    HIP.hipDeviceGetStreamPriorityRange(least_ref, greatest_ref)
+    hipDeviceGetStreamPriorityRange(least_ref, greatest_ref)
     step = least_ref[] < greatest_ref[] ? 1 : -1
     return least_ref[]:Cint(step):greatest_ref[]
 end
@@ -171,6 +171,21 @@ Return the priority of a stream `s`.
 """
 function priority(s::HIPStream)
     priority_ref = Ref{Cint}()
-    HIP.hipStreamGetPriority(s, priority_ref)
+    hipStreamGetPriority(s, priority_ref)
     return priority_ref[]
 end
+
+## global properties
+
+@enum_without_prefix hipStreamCaptureStatus hipStreamCapture
+
+function capture_status(stream::HIPStream=stream())
+    status_ref = Ref{hipStreamCaptureStatus}()
+    id_ref = Ref{UInt64}()
+    hipStreamGetCaptureInfo(stream, status_ref, id_ref)
+    return (status=status_ref[],
+            id=(status_ref[] == StatusActive ? id_ref[] : nothing))
+end
+
+is_capturing(stream::HIPStream=stream()) =
+    capture_status(stream).status != StatusNone

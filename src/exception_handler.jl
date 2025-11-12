@@ -6,7 +6,7 @@ function exception_info(dev::HIPDevice)::Ptr{Device.ExceptionInfo}
     ei = get!(
         () -> Device.alloc_exception_info(),
         GLOBAL_EXCEPTION_INFO, hash(dev))
-    return convert(Ptr{Device.ExceptionInfo}, Mem.device_ptr(ei))
+    return convert(Ptr{Device.ExceptionInfo}, ei)
 end
 
 function has_exception(dev::HIPDevice)::Bool
