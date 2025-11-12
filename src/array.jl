@@ -525,6 +525,9 @@ function Base.unsafe_convert(::Type{ROCDeviceArray{T, N, AS.Global}}, a::DenseRO
     )
 end
 
+Adapt.adapt_storage(::Adaptor, x::ROCArray{T,N}) where {T,N} =
+    Base.unsafe_convert(ROCDeviceArray{T,N,AS.Global}, x)
+
 
 ## synchronization
 
