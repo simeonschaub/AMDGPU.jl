@@ -122,10 +122,10 @@ Return `false` if a stream is busy (has task running or queued)
 and `true` if that stream is free.
 """
 function isdone(s::HIPStream)
-    res = unchecked_hipStreamQuery(s)
-    if res == ERROR_NOT_READY
+    res = hipStreamQuery(s.handle)
+    if res == hipErrorNotReady
         return false
-    elseif res == SUCCESS
+    elseif res == hipSuccess
         return true
     else
         throw_api_error(res)
@@ -133,20 +133,14 @@ function isdone(s::HIPStream)
 end
 
 """
-    synchronize([stream::HIPStream]; blocking::Bool=false)
+    synchronize([stream::HIPStream])
 
 Wait until `stream` has finished executing, with `stream` defaulting to the stream
 associated with the current Julia task.
 
-The `blocking` parameter is provided for compatibility but currently ignored,
-as HIP stream synchronization is always blocking at the driver level.
-
 See also: [`device_synchronize`](@ref)
 """
-function synchronize(stream::HIPStream=stream(); blocking::Bool=false)
-    hipStreamSynchronize(stream)
-    return
-end
+synchronize(stream::HIPStream=stream())
 
 """
     priority_range()

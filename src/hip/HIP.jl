@@ -82,17 +82,7 @@ include("stream.jl")
 include("event.jl")
 include("pool.jl")
 include("module.jl")
-
-"""
-Blocks until all kernels on all streams have completed.
-Uses currently active device.
-"""
-function device_synchronize()
-    hipDeviceSynchronize()
-    AMDGPU.synchronize() # To trigger any Julia-kernel exception.
-    AMDGPU.maybe_collect(; blocking=true)
-    return
-end
+include("synchronization.jl")
 
 function reclaim(bytes_to_keep::Integer = 0)
     device_synchronize()
