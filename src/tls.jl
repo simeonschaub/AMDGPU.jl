@@ -1,15 +1,13 @@
 mutable struct TaskLocalState
     device::HIPDevice
-    context::HIPContext
     streams::Vector{Union{HIPStream,Nothing}}
 end
 
 function TaskLocalState(
     dev::HIPDevice = something(HIP.DEFAULT_DEVICE[], HIPDevice(1)),
-    ctx::HIPContext = HIPContext(dev),
 )
     streams = Union{Nothing, HIPStream}[nothing for _ in 1:HIP.ndevices()]
-    TaskLocalState(dev, ctx, streams)
+    TaskLocalState(dev, streams)
 end
 
 function Base.getproperty(state::TaskLocalState, field::Symbol)
@@ -27,12 +25,11 @@ task_local_state!(args...)::TaskLocalState =
     get!(() -> TaskLocalState(args...), task_local_storage(), :AMDGPU)
 
 Base.copy(state::TaskLocalState) = TaskLocalState(
-    state.device, state.context, copy(state.streams))
+    state.device, copy(state.streams))
 
 function Base.show(io::IO, state::TaskLocalState)
     println(io, "TaskLocalState:")
     println(io, "  Device: $(state.device)")
-    println(io, "  HIP Context: $(state.context)")
     println(io, "  HIP Stream: $(state.stream)")
 end
 
@@ -54,19 +51,25 @@ function device!(dev::HIPDevice)
     # Set the new default device.
     HIP.DEFAULT_DEVICE[] = dev
 
-    ctx = HIPContext(dev)
     state = task_local_state()
     if state ≡ nothing
-        task_local_state!(dev, ctx)
+        task_local_state!(dev)
     else
         state.device = dev
-        state.context = ctx
     end
-    HIP.context!(ctx)
+    HIP.hipSetDevice(deviceid(dev))
     return dev
 end
 
-device!(f::Function, dev::HIPDevice) = context!(f, HIPContext(dev))
+function device!(f::Function, dev::HIPDevice)
+    old_dev = device()
+    device!(dev)
+    try
+        f()
+    finally
+        device!(old_dev)
+    end
+end
 
 function stream(state::TaskLocalState)::HIPStream
     i = device_id(state.device)
@@ -115,38 +118,6 @@ function stream!(f::Function, s::HIPStream)
     end
 end
 
-context() = task_local_state!().context
-
-function context!(ctx::HIPContext)
-    state = task_local_state()
-    if state ≡ nothing
-        old_ctx = nothing
-        HIP.context!(ctx)
-        task_local_state!(HIP.device(), ctx)
-    else
-        old_ctx = state.context
-        if old_ctx != ctx
-            HIP.context!(ctx)
-            state.device = HIP.device()
-            state.context = ctx
-        end
-    end
-    return old_ctx
-end
-
-function context!(f::Function, ctx::HIPContext)
-    if ctx.valid
-        old_ctx = context!(ctx)
-        return try
-            f()
-        finally
-            old_ctx ≢ nothing && old_ctx != ctx && context!(old_ctx)
-        end
-    else
-        @warn "CTX not valid"
-    end
-end
-
 priority() = task_local_state!().stream.priority
 
 """
@@ -190,9 +161,9 @@ function priority!(f::Function, p::Symbol)
 end
 
 @inline function prepare_state(state = task_local_state!())
-    hip_ctx = Ref{HIP.hipCtx_t}()
-    HIP.hipCtxGetCurrent(hip_ctx)
-    state.context.context != hip_ctx[] &&
-        HIP.context!(state.context)
+    dev = Ref{Cint}()
+    HIP.hipGetDevice(dev)
+    dev[] != deviceid(state.device) &&
+        HIP.hipSetDevice(deviceid(state.device))
     return
 end

@@ -107,8 +107,8 @@ function library_state(
 
     LibraryState = @NamedTuple{handle::HandleType, stream::HIPStream}
     states = get!(task_local_storage(), library_key) do
-        Dict{HIPContext, LibraryState}()
-    end::Dict{HIPContext, LibraryState}
+        Dict{HIPDevice, LibraryState}()
+    end::Dict{HIPDevice, LibraryState}
 
     @noinline function new_state(tls)
         new_handle = pop!(
@@ -137,9 +137,9 @@ function library_state(
 end
 
 @inline function prepare_state(state = task_local_state!())
-    hip_ctx = Ref{HIP.hipCtx_t}()
-    HIP.hipCtxGetCurrent(hip_ctx)
-    state.context.context != hip_ctx[] &&
-        HIP.context!(state.context)
+    dev = Ref{Cint}()
+    HIP.hipGetDevice(dev)
+    dev[] != deviceid(state.device) &&
+        HIP.hipSetDevice(deviceid(state.device))
     return
 end

@@ -558,7 +558,7 @@ function Base.convert(::Type{ROCPtr{T}}, managed::Managed{M}) where {T, M}
     end
 
     # accessing memory on another device: ensure the data is ready and accessible
-    if M == DeviceMemory && state.context != managed.mem.ctx
+    if M == DeviceMemory && state.device != managed.mem.dev
         maybe_synchronize(managed)
         source_device = managed.mem.dev
 
@@ -725,17 +725,17 @@ end
 @inline function _pool_free(mem::DeviceMemory, stream::HIPStream)
     if mem.async
         # stream-ordered allocations are not tied to a context. we always need to free them,
-        # and if the owning context (or stream) was destroyed, use a new (or default) one.
-        if HIP.isvalid(mem.ctx) && HIP.isvalid(stream)
-            context!(mem.ctx) do
+        # and if the owning stream was destroyed, use a new (or default) one.
+        if HIP.isvalid(stream)
+            device!(mem.dev) do
                 free(mem; stream)
             end
         else
             free(mem; stream = default_stream())
         end
     else
-        # regular allocations are tied to a context, so ignore if the context was destroyed
-        context!(mem.ctx; skip_destroyed = true) do
+        # regular allocations are tied to a device
+        device!(mem.dev) do
             free(mem)
         end
     end

@@ -5,7 +5,7 @@ export HIPMemoryPool, default_memory_pool, memory_pool, memory_pool!, trim,
 
 mutable struct HIPMemoryPool
     handle::hipMemPool_t
-    ctx::HIPContext
+    device::HIPDevice
 
     function HIPMemoryPool(dev::HIPDevice;
                           maxSize::Integer=0)
@@ -23,8 +23,7 @@ mutable struct HIPMemoryPool
         handle_ref = Ref{hipMemPool_t}()
         hipMemPoolCreate(handle_ref, props)
 
-        ctx = HIPContext()
-        new(handle_ref[], ctx)
+        new(handle_ref[], dev)
         # NOTE: we cannot attach a finalizer to this object, as the pool can be active
         #       without any references to it (similar to how contexts work).
     end

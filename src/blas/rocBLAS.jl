@@ -5,7 +5,7 @@ import AMDGPU: librocblas, AnyROCArray, StridedROCVector, StridedROCMatrix
 import AMDGPU: StridedROCVecOrMat, StridedROCArray
 import AMDGPU: HandleCache, HIP, library_state
 import AMDGPU: @check, check
-import .HIP: HIPContext, HIPStream, hipStream_t, hipEvent_t
+import .HIP: HIPDevice, HIPStream, hipStream_t, hipEvent_t
 
 using GPUArrays
 using LinearAlgebra
@@ -42,7 +42,7 @@ function destroy_handle!(handle)
 end
 
 # cache for created, but unused handles
-const IDLE_HANDLES = HandleCache{HIPContext, rocblas_handle}()
+const IDLE_HANDLES = HandleCache{HIPDevice, rocblas_handle}()
 
 function lib_state()
     return library_state(

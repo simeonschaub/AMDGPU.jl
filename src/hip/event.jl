@@ -43,11 +43,11 @@ end
 
 wait(event::HIPEvent) = hipEventSynchronize(event)
 
-function synchronize(event::HIPEvent; blocking::Bool=true)
-    non_blocking_synchronize(event) || AMDGPU.maybe_collect(; blocking)
-    wait(event)
-    return
-end
+#function synchronize(event::HIPEvent; blocking::Bool=true)
+#    non_blocking_synchronize(event) || AMDGPU.maybe_collect(; blocking)
+#    wait(event)
+#    return
+#end
 
 function HIPEvent(stream::hipStream_t; do_record::Bool = true, timing=false)
     event_ref = Ref{hipEvent_t}()

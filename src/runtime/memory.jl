@@ -31,14 +31,13 @@ Device memory residing on the GPU.
 """
 struct DeviceMemory <: AbstractMemory
     dev::HIPDevice
-    ctx::HIPContext
     ptr::ROCPtr{Cvoid}
     bytesize::Int
 
     async::Bool
 end
 
-DeviceMemory() = DeviceMemory(device(), context(), ROC_NULL, 0, false)
+DeviceMemory() = DeviceMemory(device(), ROC_NULL, 0, false)
 
 Base.pointer(mem::DeviceMemory) = mem.ptr
 Base.sizeof(mem::DeviceMemory) = mem.bytesize
@@ -49,8 +48,9 @@ Base.show(io::IO, mem::DeviceMemory) =
 Base.convert(::Type{ROCPtr{T}}, mem::DeviceMemory) where {T} =
     convert(ROCPtr{T}, pointer(mem))
 
+# TODO: remove this
 Base.unsafe_convert(::Type{Ptr{T}}, mem::DeviceMemory) where {T} =
-    unsafe_convert(Ptr{T}, pointer(mem))
+    reinterpret(Ptr{T}, pointer(mem))
 
 """
     alloc(DeviceMemory, bytesize::Integer;
@@ -78,7 +78,7 @@ function alloc(::Type{DeviceMemory}, bytesize::Integer;
         HIP.hipMalloc(ptr_ref, bytesize)
     end
 
-    return DeviceMemory(device(), context(), reinterpret(ROCPtr{Cvoid}, ptr_ref[]), bytesize, async)
+    return DeviceMemory(device(), reinterpret(ROCPtr{Cvoid}, ptr_ref[]), bytesize, async)
 end
 
 function free(mem::DeviceMemory; stream::Union{Nothing,HIPStream}=nothing)
@@ -101,12 +101,11 @@ end
 Pinned memory residing on the CPU, possibly accessible on the GPU.
 """
 struct HostMemory <: AbstractMemory
-    ctx::HIPContext
     ptr::Ptr{Cvoid}
     bytesize::Int
 end
 
-HostMemory() = HostMemory(context(), C_NULL, 0)
+HostMemory() = HostMemory(C_NULL, 0)
 
 Base.pointer(mem::HostMemory) = mem.ptr
 Base.sizeof(mem::HostMemory) = mem.bytesize
@@ -149,7 +148,7 @@ function alloc(::Type{HostMemory}, bytesize::Integer, flags=0)
     ptr_ref = Ref{Ptr{Cvoid}}()
     HIP.hipHostMalloc(ptr_ref, bytesize, flags)
 
-    return HostMemory(context(), ptr_ref[], bytesize)
+    return HostMemory(ptr_ref[], bytesize)
 end
 
 
@@ -171,7 +170,7 @@ function register(::Type{HostMemory}, ptr::Ptr, bytesize::Integer, flags=0)
 
     HIP.hipHostRegister(ptr, bytesize, flags)
 
-    return HostMemory(context(), ptr, bytesize)
+    return HostMemory(ptr, bytesize)
 end
 
 """
@@ -199,12 +198,11 @@ end
 Unified memory that is accessible on both the CPU and GPU.
 """
 struct UnifiedMemory <: AbstractMemory
-    ctx::HIPContext
     ptr::ROCPtr{Cvoid}
     bytesize::Int
 end
 
-UnifiedMemory() = UnifiedMemory(context(), ROC_NULL, 0)
+UnifiedMemory() = UnifiedMemory(ROC_NULL, 0)
 
 Base.pointer(mem::UnifiedMemory) = mem.ptr
 Base.sizeof(mem::UnifiedMemory) = mem.bytesize
@@ -231,7 +229,7 @@ function alloc(::Type{UnifiedMemory}, bytesize::Integer,
     ptr_ref = Ref{Ptr{Cvoid}}()
     HIP.hipMallocManaged(ptr_ref, bytesize, flags)
 
-    return UnifiedMemory(context(), reinterpret(ROCPtr{Cvoid}, ptr_ref[]), bytesize)
+    return UnifiedMemory(reinterpret(ROCPtr{Cvoid}, ptr_ref[]), bytesize)
 end
 
 
@@ -384,21 +382,21 @@ end
 
 # - IdDict does not free the memory
 # - WeakRef dict does not unique the key by objectid
-const __pinned_objects = Dict{Tuple{HIPContext,Ptr{Cvoid}}, PinnedObject}()
+const __pinned_objects = Dict{Tuple{HIPDevice,Ptr{Cvoid}}, PinnedObject}()
 
 function pin(a::AbstractArray)
-    ctx = context()
+    dev = device()
     ptr = pointer(a)
 
     Base.@lock __pin_lock begin
-        # only pin an object once per context
-        key = (ctx, convert(Ptr{Nothing}, ptr))
+        # only pin an object once per device
+        key = (dev, convert(Ptr{Nothing}, ptr))
         if haskey(__pinned_objects, key) && __pinned_objects[key].ref.value !== nothing
             if sizeof(a) == __pinned_objects[key].size
                 return nothing
             else
                 # if the object size has changed, unpin it first; it will be re-pinned with the new size
-                __unpin(ptr, ctx)
+                __unpin(ptr, dev)
             end
         end
         __pinned_objects[key] = PinnedObject(WeakRef(a), sizeof(a))
@@ -406,19 +404,19 @@ function pin(a::AbstractArray)
 
      __pin(ptr, sizeof(a))
     finalizer(a) do _
-        __unpin(ptr, ctx)
+        __unpin(ptr, dev)
     end
 
     a
 end
 
 function pin(ref::Base.RefValue{T}) where T
-    ctx = context()
+    dev = device()
     ptr = Base.unsafe_convert(Ptr{T}, ref)
 
     __pin(ptr, aligned_sizeof(T))
     finalizer(ref) do _
-        __unpin(ptr, ctx)
+        __unpin(ptr, dev)
     end
 
     ref
@@ -434,12 +432,12 @@ end
 # > will return an error.
 __pin(a::Union{SubArray, Base.ReinterpretArray, Base.ReshapedArray}) = __pin(parent(a))
 
-# refcount the pinning per context, since we can only pin a memory range once
-const __pinned_memory = Dict{Tuple{HIPContext,Ptr{Cvoid}}, HostMemory}()
-const __pin_count = Dict{Tuple{HIPContext,Ptr{Cvoid}}, Int}()
+# refcount the pinning per device, since we can only pin a memory range once
+const __pinned_memory = Dict{Tuple{HIPDevice,Ptr{Cvoid}}, HostMemory}()
+const __pin_count = Dict{Tuple{HIPDevice,Ptr{Cvoid}}, Int}()
 function __pin(ptr::Ptr, sz::Int)
-    ctx = context()
-    key = (ctx, convert(Ptr{Nothing}, ptr))
+    dev = device()
+    key = (dev, convert(Ptr{Nothing}, ptr))
 
     Base.@lock __pin_lock begin
         pin_count = if haskey(__pin_count, key)
@@ -461,8 +459,8 @@ function __pin(ptr::Ptr, sz::Int)
 
     return
 end
-function __unpin(ptr::Ptr, ctx::HIPContext)
-    key = (ctx, convert(Ptr{Nothing}, ptr))
+function __unpin(ptr::Ptr, dev::HIPDevice)
+    key = (dev, convert(Ptr{Nothing}, ptr))
 
     Base.@lock __pin_lock begin
         @assert haskey(__pin_count, key) "Cannot unpin unmanaged pointer $ptr."
@@ -470,17 +468,15 @@ function __unpin(ptr::Ptr, ctx::HIPContext)
 
         if pin_count == 0
             mem = @inbounds __pinned_memory[key]
-            context!(ctx; skip_destroyed=true) do
-                unregister(mem)
-            end
+            unregister(mem)
             delete!(__pinned_memory, key)
         end
     end
 
     return
 end
-function __pinned(ptr::Ptr, ctx::HIPContext)
-    key = (ctx, convert(Ptr{Nothing}, ptr))
+function __pinned(ptr::Ptr, dev::HIPDevice)
+    key = (dev, convert(Ptr{Nothing}, ptr))
     Base.@lock __pin_lock begin
         haskey(__pin_count, key)
     end

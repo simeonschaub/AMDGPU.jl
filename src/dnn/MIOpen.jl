@@ -6,7 +6,7 @@ using ..AMDGPU
 import AMDGPU: ROCArray, LockedObject, HandleCache, HIP, library_state
 import AMDGPU: libMIOpen_path
 import AMDGPU: check, @check
-import .HIP: hipStream_t
+import .HIP: HIPDevice, hipStream_t
 
 include("libMIOpen.jl")
 
@@ -76,7 +76,7 @@ function destroy_handle!(handle::miopenHandle_t)
     nothing
 end
 
-const IDLE_HANDLES = HandleCache{HIPContext, miopenHandle_t}()
+const IDLE_HANDLES = HandleCache{HIPDevice, miopenHandle_t}()
 
 lib_state() = library_state(
     :MIOpen, miopenHandle_t, IDLE_HANDLES,

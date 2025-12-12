@@ -15,18 +15,9 @@ Sets the current device to `AMDGPU.devices()[idx]`. See
 """
 device_id!(idx::Integer) = device!(devices()[idx])
 
-function device(context::HIPContext)
-    return HIP.context!(context) do
-        HIP.device()
-    end
-end
-
 function device(stream::HIPStream)
-    # Get the device associated with the stream's context
-    if stream.ctx === nothing
-        return device()
-    end
-    return device(stream.ctx)
+    # Get the device associated with the stream
+    return stream.device
 end
 
 device(idx::Integer) = devices()[idx]

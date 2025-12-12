@@ -15,7 +15,7 @@ import AbstractFFTs: fft, bfft, ifft, rfft, Plan, ScaledPlan
 import ..AMDGPU
 import .AMDGPU: ROCArray, ROCVector, HandleCache, HIP, unsafe_free!, check, @check
 import AMDGPU: librocfft
-import .HIP: hipStream_t, HIPContext, HIPStream
+import .HIP: HIPDevice, hipStream_t, HIPStream
 
 include("librocfft.jl")
 include("error.jl")

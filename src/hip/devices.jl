@@ -4,6 +4,10 @@ export
     HIPDevice, current_device, has_device,
     name, deviceid, uuid, parent_uuid, totalmem, can_access_peer, gcn_arch
 
+# Unchecked HIP device function
+@inline unchecked_hipGetDevice(deviceId) =
+    @gcsafe_ccall(libhip.hipGetDevice(deviceId::Ptr{Cint})::hipError_t)
+
 """
     HIPDevice(ordinal::Integer)
 
@@ -19,11 +23,11 @@ struct HIPDevice
     end
 
     global function current_device()
-        device_ref = Ref{hipDevice_t}()
-        res = unchecked_hipCtxGetDevice(device_ref)
+        device_id = Ref{Cint}()
+        res = unchecked_hipGetDevice(device_id)
         res == ERROR_INVALID_CONTEXT && throw(UndefRefError())
         res != SUCCESS && throw_api_error(res)
-        return _HIPDevice(device_ref[])
+        return HIPDevice(device_id[])
     end
 
     # for outer constructors

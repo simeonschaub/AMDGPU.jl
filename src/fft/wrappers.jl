@@ -1,5 +1,5 @@
 # Key: context (device), fft type (fwd, inv), xdims, x eltype, inplace or not, region.
-const HandleCacheKey = Tuple{HIPContext, rocfft_transform_type, Dims, Type, Bool, Any}
+const HandleCacheKey = Tuple{HIPDevice, rocfft_transform_type, Dims, Type, Bool, Any}
 # Value: (plan, worksize).
 const HandleCacheValue = Tuple{rocfft_plan, Int}
 const IDLE_HANDLES = HandleCache{HandleCacheKey, HandleCacheValue}()

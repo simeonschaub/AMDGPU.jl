@@ -37,15 +37,14 @@ Device memory residing on the GPU.
 """
 struct DeviceMemory <: AbstractAMDBuffer
     device::HIPDevice
-    ctx::HIPContext
     ptr::Ptr{Cvoid}
     bytesize::Int
     own::Bool
 end
 
 function DeviceMemory(bytesize; stream::HIP.HIPStream)
-    dev, ctx = stream.device, stream.ctx
-    bytesize == 0 && return DeviceMemory(dev, ctx, C_NULL, 0, true)
+    dev = stream.device
+    bytesize == 0 && return DeviceMemory(dev, C_NULL, 0, true)
 
     AMDGPU.maybe_collect()
     pool = pool_create(dev)
@@ -122,7 +121,6 @@ Pinned memory residing on the CPU, possibly accessible on the GPU.
 """
 struct HostMemory <: AbstractAMDBuffer
     device::HIPDevice
-    ctx::HIPContext
     ptr::Ptr{Cvoid}
     dev_ptr::Ptr{Cvoid}
     bytesize::Int
@@ -143,7 +141,7 @@ function HostMemory(
     HIP.hipHostMalloc(ptr_ref, bytesize, flags)
     ptr = ptr_ref[]
     dev_ptr = get_device_ptr(ptr)
-    HostMemory(stream.device, stream.ctx, ptr, dev_ptr, bytesize, true)
+    HostMemory(stream.device, ptr, dev_ptr, bytesize, true)
 end
 
 function HostMemory(
@@ -152,7 +150,7 @@ function HostMemory(
 )
     pin(ptr, sz)
     dev_ptr = get_device_ptr(ptr)
-    HostMemory(stream.device, stream.ctx, ptr, dev_ptr, sz, own)
+    HostMemory(stream.device, ptr, dev_ptr, sz, own)
 end
 
 Base.sizeof(b::HostMemory) = UInt64(b.bytesize)
@@ -215,7 +213,6 @@ See: https://rocm.docs.amd.com/projects/HIP/en/latest/how-to/hip_runtime_api/mem
 """
 struct UnifiedMemory <: AbstractAMDBuffer
     device::HIPDevice
-    ctx::HIPContext
     ptr::Ptr{Cvoid}
     bytesize::Int
     own::Bool
@@ -243,7 +240,7 @@ function UnifiedMemory(
     ptr::Ptr{Cvoid}, sz::Integer;
     stream::HIP.HIPStream = AMDGPU.stream(), own::Bool = false,
 )
-    UnifiedMemory(stream.device, stream.ctx, ptr, sz, own)
+    UnifiedMemory(stream.device, ptr, sz, own)
 end
 
 Base.sizeof(b::UnifiedMemory) = UInt64(b.bytesize)

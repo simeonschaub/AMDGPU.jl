@@ -3,6 +3,10 @@
 const use_nonblocking_synchronization =
     Preferences.@load_preference("nonblocking_synchronization", true)
 
+# Unchecked HIP synchronization functions
+@inline unchecked_hipDeviceSynchronize() =
+    @gcsafe_ccall(libhip.hipDeviceSynchronize()::hipError_t)
+
 
 #
 # bidirectional channel
@@ -103,7 +107,7 @@ end
 
 # if we support foreign threads, perform the actual synchronization on a separate thread.
 
-const SyncObject = Union{HIPContext, HIPStream, HIPEvent}
+const SyncObject = Union{HIPDevice, HIPStream, HIPEvent}
 
 const MAX_SYNC_THREADS = 4
 const sync_channels = Array{BidirectionalChannel{SyncObject,hipError_t}}(undef, MAX_SYNC_THREADS)
@@ -117,14 +121,11 @@ function synchronization_worker(data)
     while true
         # wait for work
         take!(chan) do v
-            if v isa HIPContext
-                context!(v)
-                unchecked_hipCtxSynchronize()
+            if v isa HIPDevice
+                unchecked_hipDeviceSynchronize()
             elseif v isa HIPStream
-                context!(v.ctx)
                 unchecked_hipStreamSynchronize(v)
             elseif v isa HIPEvent
-                context!(v.ctx)
                 unchecked_hipEventSynchronize(v)
             end
         end
@@ -178,14 +179,14 @@ end
 function device_synchronize(; blocking::Bool=false, spin::Bool=true)
     if use_nonblocking_synchronization && !blocking
         if spin && spinning_synchronization(isdone, legacy_stream())
-            hipCtxSynchronize()
+            hipDeviceSynchronize()
         else
             maybe_collect(true)
-            nonblocking_synchronize(context())
+            nonblocking_synchronize(legacy_stream())
         end
     else
         maybe_collect(true)
-        hipCtxSynchronize()
+        hipDeviceSynchronize()
     end
 
     #check_exceptions()

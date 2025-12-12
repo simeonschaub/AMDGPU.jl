@@ -40,28 +40,20 @@ const default_device = Ref{Union{Nothing,HIPDevice}}(nothing)
 
 mutable struct TaskLocalState
     device::HIPDevice
-    context::HIPContext
     streams::Vector{Union{Nothing,HIPStream}}
     math_mode::MathMode
     math_precision::Symbol
 
-    function TaskLocalState(dev::HIPDevice=something(default_device[], HIPDevice(0)),
-                            ctx::HIPContext = context(dev))
+    function TaskLocalState(dev::HIPDevice=something(default_device[], HIPDevice(0)))
         math_mode = something(default_math_mode[],
                               Base.JLOptions().fast_math==1 ? FAST_MATH : DEFAULT_MATH)
         math_precision = something(default_math_precision[], :TensorFloat32)
-        new(dev, ctx, Union{Nothing,HIPStream}[nothing for _ in 1:ndevices()],
+        new(dev, Union{Nothing,HIPStream}[nothing for _ in 1:ndevices()],
             math_mode, math_precision)
     end
 end
 
 function validate_task_local_state(state::TaskLocalState)
-    # NOTE: the context may be invalid if another task reset it (which we detect here
-    #       since we can't touch other tasks' local state from `device_reset!`)
-    if !HIP.isvalid(state.context)
-        device!(state.device)
-        @inbounds state.streams[deviceid(state.device)+1] = nothing
-    end
     return state
 end
 
@@ -93,11 +85,10 @@ end
 @inline function prepare_hip_state()
     state = task_local_state!()
 
-    # current_context() is too slow to use here (as it also calls hipCtxGetId)
-    ctx = Ref{HIP.hipCtx_t}()
-    HIP.hipCtxGetCurrent(ctx)
-    if ctx[] != state.context.handle
-        activate(state.context)
+    dev = Ref{Cint}()
+    HIP.hipGetDevice(dev)
+    if dev[] != deviceid(state.device)
+        HIP.hipSetDevice(deviceid(state.device))
     end
 
     return
@@ -108,72 +99,8 @@ end
 @inline function active_state()
     # inline to remove unused state properties
     state = task_local_state!()
-    return (device=state.device, context=state.context, stream=stream(state),
+    return (device=state.device, stream=stream(state),
             math_mode=state.math_mode, math_precision=state.math_precision)
-end
-
-
-## context-based API
-
-"""
-    context()::HIPContext
-
-Get or create a HIP context for the current thread (as opposed to
-`current_context` which may return `nothing` if there is no context bound to the
-current thread).
-"""
-function context()
-    task_local_state!().context
-end
-
-"""
-    context!(ctx::HIPContext)
-    context!(ctx::HIPContext) do ... end
-
-Bind the current host thread to the context `ctx`. Returns the previously-bound context. If
-used with do-block syntax, the change is only temporary.
-
-Note that the contexts used with this call should be previously acquired by calling
-[`context`](@ref), and not arbitrary contexts created by calling the `HIPContext`
-constructor.
-"""
-function context!(ctx::HIPContext)
-    # switch contexts
-    # NOTE: if we actually need to switch contexts, we eagerly activate it so that we can
-    #       query its device (we normally only do so lazily in `prepare_hip_state`)
-    state = task_local_state()
-    if state === nothing
-        old_ctx = nothing
-        activate(ctx)
-        dev = current_device()
-        task_local_state!(dev, ctx)
-    else
-        old_ctx = state.context
-        if old_ctx != ctx
-            activate(ctx)
-            dev = current_device()
-            state.device = dev
-            state.context = ctx
-        end
-    end
-
-    return old_ctx
-end
-
-@inline function context!(f::F, ctx::HIPContext; skip_destroyed::Bool=false) where {F<:Function}
-    # @inline so that the kwarg method is inlined too and we can const-prop skip_destroyed
-    if HIP.isvalid(ctx)
-        old_ctx = context!(ctx)::Union{HIPContext,Nothing}
-        try
-            f()
-        finally
-            if old_ctx !== nothing && old_ctx != ctx && HIP.isvalid(old_ctx)
-                context!(old_ctx)
-            end
-        end
-    elseif !skip_destroyed
-        error("This HIP context has been destroyed.")
-    end
 end
 
 
@@ -187,37 +114,6 @@ compared to [`current_context()`](@ref).
 """
 function device()
     task_local_state!().device
-end
-
-const __device_contexts = LazyInitialized{Vector{Union{Nothing,HIPContext}}}()
-device_contexts() = get!(__device_contexts) do
-    Union{Nothing,HIPContext}[nothing for _ in 1:ndevices()]
-end
-function device_context(i::Int)
-    contexts = device_contexts()
-    assume(isassigned(contexts, i))
-    @inbounds contexts[i]
-end
-function device_context!(i::Int, ctx)
-    contexts = device_contexts()
-    @inbounds contexts[i] = ctx
-    return
-end
-device_context(dev::HIPDevice) = device_context(deviceid(dev)+1)
-device_context!(dev::HIPDevice, ctx) = device_context!(deviceid(dev)+1, ctx)
-
-function context(dev::HIPDevice)
-    devidx = deviceid(dev)+1
-
-    # querying the primary context for a device is expensive (~100ns), so cache it
-    ctx = device_context(devidx)
-    if ctx !== nothing
-        return ctx
-    end
-
-    ctx = HIPContext(dev)
-    device_context!(devidx, ctx)
-    return ctx
 end
 
 """
@@ -236,35 +132,35 @@ a primary context will be created and activated).
 device!
 
 function device!(dev::HIPDevice, flags=nothing)
-    # configure the primary context flags
+    # configure the primary device flags
     if flags !== nothing
         devidx = deviceid(dev)+1
-        if device_context(devidx) !== nothing
-            error("Cannot set flags for an active device. Do so before calling any HIP function, or reset the device first.")
-        end
-        HIP.hipDevicePrimaryCtxSetFlags(dev, flags)
+        error("Device flags are no longer supported")
     end
 
     # make this device the new default
     default_device[] = dev
 
-    # switch contexts
-    ctx = context(dev)
+    # switch device
     state = task_local_state()
     if state === nothing
         task_local_state!(dev)
     else
         state.device = dev
-        state.context = ctx
     end
-    activate(ctx)
+    HIP.hipSetDevice(deviceid(dev))
 
     dev
 end
 
 function device!(f::Function, dev::HIPDevice)
-    ctx = context(dev)
-    context!(f, ctx)
+    old_dev = device()
+    device!(dev)
+    try
+        f()
+    finally
+        device!(old_dev)
+    end
 end
 
 """
@@ -281,10 +177,6 @@ function device_reset!(dev::HIPDevice=device())
     # as there might be users outside of AMDGPU.jl
     pctx = HIPPrimaryContext(dev)
     unsafe_reset!(pctx)
-
-    # wipe the device-specific state
-    devidx = deviceid(dev)+1
-    device_context!(devidx, nothing)
 
     return
 end
@@ -394,25 +286,24 @@ an array or a dictionary, use additional locks.
 """
 struct PerDevice{T}
     lock::ReentrantLock
-    values::LazyInitialized{Vector{Union{Nothing,Tuple{HIPContext,T}}},Nothing}
+    values::LazyInitialized{Vector{Union{Nothing,Tuple{HIPDevice,T}}},Nothing}
 end
 
 function PerDevice{T}() where {T}
-    values = LazyInitialized{Vector{Union{Nothing,Tuple{HIPContext,T}}}}()
+    values = LazyInitialized{Vector{Union{Nothing,Tuple{HIPDevice,T}}}}()
     PerDevice{T}(ReentrantLock(), values)
 end
 
 get_values(x::PerDevice{T}) where {T} = get!(x.values) do
-    Union{Nothing,Tuple{HIPContext,T}}[nothing for _ in 1:ndevices()]
+    Union{Nothing,Tuple{HIPDevice,T}}[nothing for _ in 1:ndevices()]
 end
 
 function Base.get(x::PerDevice, dev::HIPDevice, val)
     y = get_values(x)
     id = deviceid(dev)+1
-    ctx = device_context(id)    # may be nothing
     @inbounds begin
         # test-lock-test
-        if y[id] === nothing || y[id][1] !== ctx
+        if y[id] === nothing || y[id][1] !== dev
             val
         else
             y[id][2]
@@ -424,13 +315,12 @@ function Base.get!(constructor::F, x::PerDevice{T}, dev::HIPDevice) where {F <: 
     y = get_values(x)
     global _y = y
     id = deviceid(dev)+1
-    ctx = device_context(id)    # may be nothing
     @inbounds begin
         # test-lock-test
-        if y[id] === nothing || (y[id]::Tuple)[1] !== ctx
+        if y[id] === nothing || (y[id]::Tuple)[1] !== dev
             Base.@lock x.lock begin
-                if y[id] === nothing || (y[id]::Tuple)[1] !== ctx
-                    y[id] = (context(), constructor())
+                if y[id] === nothing || (y[id]::Tuple)[1] !== dev
+                    y[id] = (dev, constructor())
                 end
             end
         end

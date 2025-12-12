@@ -13,7 +13,7 @@ mutable struct HIPStream
     const handle::hipStream_t
     Base.@atomic valid::Bool
 
-    const ctx::Union{Nothing,HIPContext}
+    const device::HIPDevice
 
     function HIPStream(; priority::Union{Nothing,Integer}=nothing)
         handle_ref = Ref{hipStream_t}()
@@ -24,17 +24,17 @@ mutable struct HIPStream
             hipStreamCreateWithPriority(handle_ref, flags, priority)
         end
 
-        ctx = HIPContext()
-        obj = new(handle_ref[], true, ctx)
+        dev = device()
+        obj = new(handle_ref[], true, dev)
         finalizer(unsafe_destroy!, obj)
         return obj
     end
 
-    global default_stream() = new(convert(hipStream_t, C_NULL), true)
+    global default_stream() = new(convert(hipStream_t, C_NULL), true, device())
 
-    global legacy_stream() = new(convert(hipStream_t, C_NULL), true)
+    global legacy_stream() = new(convert(hipStream_t, C_NULL), true, device())
 
-    global per_thread_stream() = new(hipStreamPerThread, true)
+    global per_thread_stream() = new(hipStreamPerThread, true, device())
 end
 
 """
@@ -82,19 +82,14 @@ Base.hash(s::HIPStream, h::UInt) = hash(s.handle, h)
 @enum_without_prefix hipStreamCaptureMode hipStream
 
 function unsafe_destroy!(s::HIPStream)
-    @assert s.ctx !== nothing "Cannot destroy unassociated stream"
-    context!(s.ctx; skip_destroyed=true) do
-        hipStreamDestroy(s)
-    end
+    hipStreamDestroy(s)
     Base.@atomic s.valid = false
 end
 
 function Base.show(io::IO, stream::HIPStream)
     print(io, "HIPStream(")
     @printf(io, "%p", stream.handle)
-    if stream.ctx !== nothing
-        print(io, ", ", stream.ctx)
-    end
+    print(io, ", device=", deviceid(stream.device))
     print(io, ")")
 end
 

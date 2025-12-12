@@ -52,8 +52,8 @@ include("hsa/HSA.jl")
 include("hip/HIP.jl")
 
 using .HIP
-using .HIP: HIPContext, HIPStream
-export HIPContext, HIPDevice, HIPStream
+using .HIP: HIPStream
+export HIPDevice, HIPStream
 
 include("cache.jl")
 include("pointer.jl")
@@ -138,7 +138,7 @@ export ROCBackend
 
 function __init__()
     # Used to shutdown hostcalls if any is running.
-    atexit(() -> begin Runtime.RT_EXITING[] = true end)
+    atexit(() -> begin RT_EXITING[] = true end)
 
     if haskey(ENV, "HIP_LAUNCH_BLOCKING")
         launch_blocking = parse(Bool, ENV["HIP_LAUNCH_BLOCKING"])

@@ -384,8 +384,8 @@ Base.elsize(::Type{<:ROCArray{T}}) where {T} = aligned_sizeof(T)
 Base.size(x::ROCArray) = x.dims
 Base.sizeof(x::ROCArray) = Base.elsize(x) * length(x)
 
-context(A::ROCArray) = A.data[].mem.ctx
-device(A::ROCArray) = device(A.data[].mem.ctx)
+context(A::ROCArray) = A.data[].mem.dev
+device(A::ROCArray) = A.data[].mem.dev
 
 memory_type(x::ROCArray) = memory_type(typeof(x))
 memory_type(::Type{<:ROCArray{<:Any, <:Any, M}}) where {M} = @isdefined(M) ? M : Any
@@ -634,7 +634,7 @@ function Base.unsafe_copyto!(
         dest::DenseROCArray{T}, doffs,
         src::Array{T}, soffs, n
     ) where {T}
-    context!(context(dest)) do
+    device!(device(dest)) do
         # the copy below may block in `libcuda`, so it'd be good to perform a nonblocking
         # synchronization here, but the exact cases are hard to know and detect (e.g., unpinned
         # memory normally blocks, but not for all sizes, and not on all memory architectures).
@@ -656,7 +656,7 @@ function Base.unsafe_copyto!(
         dest::Array{T}, doffs,
         src::DenseROCArray{T}, soffs, n
     ) where {T}
-    context!(context(src)) do
+    device!(device(src)) do
         # see comment above; this copy may also block in `libcuda` when dealing with e.g.
         # unpinned memory, but even more likely because we need to wait for the GPU to finish
         # so that the expected data is available. because of that, eagerly perform a nonblocking
@@ -680,7 +680,7 @@ function Base.unsafe_copyto!(
     if device(src) == device(dest) ||
             maybe_enable_peer_access(device(src), device(dest)) == 1
         # use direct device-to-device copy
-        context!(context(src)) do
+        device!(device(src)) do
             GC.@preserve src dest begin
                 unsafe_copyto!(pointer(dest, doffs), pointer(src, soffs), n; async = true)
                 if Base.isbitsunion(T)
@@ -747,7 +747,7 @@ function Base.unsafe_copyto!(
         dest::DenseROCArray{T, <:Any, <:Union{UnifiedMemory, HostMemory}}, doffs,
         src::DenseROCArray{T}, soffs, n
     ) where {T}
-    context!(context(src)) do
+    device!(device(src)) do
         GC.@preserve src dest begin
             unsafe_copyto!(pointer(dest, doffs), pointer(src, soffs), n; async = true)
             if Base.isbitsunion(T)
@@ -762,7 +762,7 @@ function Base.unsafe_copyto!(
         dest::DenseROCArray{T}, doffs,
         src::DenseROCArray{T, <:Any, <:Union{UnifiedMemory, HostMemory}}, soffs, n
     ) where {T}
-    context!(context(dest)) do
+    device!(device(dest)) do
         GC.@preserve src dest begin
             unsafe_copyto!(pointer(dest, doffs), pointer(src, soffs), n; async = true)
             if Base.isbitsunion(T)
@@ -905,7 +905,7 @@ const MemsetCompatTypes = Union{
 function Base.fill!(A::DenseROCArray{T}, x) where {T <: MemsetCompatTypes}
     U = memsettype(T)
     y = reinterpret(U, convert(T, x))
-    context!(context(A)) do
+    device!(device(A)) do
         GC.@preserve A memset(convert(ROCPtr{U}, pointer(A)), y, length(A))
     end
     return A
@@ -979,7 +979,7 @@ function Base.resize!(A::ROCVector{T}, n::Integer) where {T}
 
         # allocate new data
         old_data = A.data
-        new_data = context!(context(A)) do
+        new_data = device!(device(A)) do
             mem = pool_alloc(memory_type(A), bufsize)
             ptr = convert(ROCPtr{T}, mem)
             DataRef(pool_free, mem)
@@ -998,7 +998,7 @@ function Base.resize!(A::ROCVector{T}, n::Integer) where {T}
         # copy existing elements and type tags
         m = min(length(A), n)
         if m > 0
-            context!(context(A)) do
+            device!(device(A)) do
                 unsafe_copyto!(new_pointer, old_pointer, m; async = true)
                 if Base.isbitsunion(T)
                     unsafe_copyto!(new_typetagdata, old_typetagdata, m; async = true)

@@ -13,7 +13,7 @@ using ..AMDGPU: ROCArrayStyle, threadIdx, blockIdx, blockDim
 
 import AMDGPU: librocsparse, HandleCache, HIP, library_state, ROCVector
 import AMDGPU.Device: ROCDeviceVector
-import .HIP: HIPContext, HIPStream, hipStream_t
+import .HIP: HIPDevice, HIPStream, hipStream_t
 
 import SparseArrays: SparseVector, SparseMatrixCSC
 
@@ -32,7 +32,7 @@ function create_handle()
     handle_ref[]
 end
 
-const IDLE_HANDLES = HandleCache{HIPContext, rocsparse_handle}()
+const IDLE_HANDLES = HandleCache{HIPDevice, rocsparse_handle}()
 
 lib_state() = library_state(
     :rocSPARSE, rocsparse_handle, IDLE_HANDLES,

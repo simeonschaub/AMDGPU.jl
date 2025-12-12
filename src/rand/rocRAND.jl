@@ -4,7 +4,7 @@ import ..AMDGPU
 import .AMDGPU: ROCArray, HandleCache, library_state
 import AMDGPU: librocrand
 import ..HIP
-import .HIP: HIPContext, HIPStream, hipStream_t
+import .HIP: HIPDevice, HIPStream, hipStream_t
 
 using CEnum
 using GPUArrays
@@ -24,7 +24,7 @@ end
 # stdlib Random integration
 include("random.jl")
 
-const IDLE_RNGS = HandleCache{HIPContext, RNG}()
+const IDLE_RNGS = HandleCache{HIPDevice, RNG}()
 
 lib_state() = library_state(
     :rocRAND, RNG, IDLE_RNGS,
