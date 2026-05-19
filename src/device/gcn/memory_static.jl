@@ -63,9 +63,11 @@ macro ROCStaticLocalArray(T, dims, zeroinit=true)
     @gensym id len
     quote
         $len = prod($(esc(dims)))
-        $ROCDeviceArray($(esc(dims)),
+        $ROCDeviceArray(
             $alloc_local($(QuoteNode(Symbol(:ROCStaticLocalArray_, id))),
-            $(esc(T)), $len, $zeroinit))
+            $(esc(T)), $len, $zeroinit),
+            $(esc(dims)),
+        )
     end
 end
 
@@ -80,7 +82,7 @@ macro ROCDynamicLocalArray(T, dims, zeroinit=true, offset=0)
             $ptr = $alloc_local(
                 $(QuoteNode(Symbol(:ROCDynamicLocalArray_, id))),
                 $(esc(T)), 0, $zeroinit)
-            $DA = $ROCDeviceArray($(esc(dims)), $ptr + $(esc(offset)))
+            $DA = $ROCDeviceArray($ptr + $(esc(offset)), $(esc(dims)))
             if $zeroinit
                 # Zeroinit doesn't work at the compiler level for dynamic LDS
                 # allocations, so zero it here
