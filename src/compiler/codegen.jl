@@ -256,7 +256,7 @@ function compile_or_lookup(@nospecialize(job::CompilerJob))::HIPResults
     return res
 end
 
-function create_executable(obj)
+function create_executable(@nospecialize(job::CompilerJob), obj)
     # ROCm discovery does not run while generating package output.
     use_precompile_lld = isempty(AMDGPU.lld_path) &&
                          ccall(:jl_generating_output, Cint, ()) == 1 &&
@@ -272,12 +272,29 @@ function create_executable(obj)
     path_exe = tempname(;cleanup=false) * ".exe"
 
     write(path_o, obj)
-    run(`$lld -shared -o $path_exe $path_o`)
-    bin = read(path_exe)
-
-    rm(path_o)
-    rm(path_exe)
-    return bin
+    try
+        # Disallow undefined symbols (like the clang HIP toolchain does): the HIP
+        # runtime cannot resolve them, so a kernel that links with dangling
+        # references would only fail at load time with an unhelpful
+        # `hipErrorNoBinaryForGpu`, while lld reports the offending symbol
+        # and the device code referencing it.
+        proc, log = run_and_collect(
+            `$lld -shared --no-undefined -o $path_exe $path_o`)
+        if !success(proc)
+            help = if occursin("undefined symbol: jl_", log)
+                """Undefined `jl_*` symbols indicate that the kernel references parts of the Julia runtime,
+                which is not available on the device, e.g. due to dynamic behavior that could not be resolved statically.
+                Try inspecting the generated code with any of the @device_code_... macros."""
+            else
+                nothing
+            end
+            throw(KernelError(job, "failed to link GPU binary:\n\n$log", help))
+        end
+        return read(path_exe)
+    finally
+        rm(path_o; force=true)
+        rm(path_exe; force=true)
+    end
 end
 
 function find_global_hostcalls(mod::LLVM.Module)
@@ -324,7 +341,7 @@ function hipcompile(@nospecialize(job::CompilerJob))
         Compilation will likely fail.
         """
     end
-    (; obj=create_executable(codeunits(obj)), entry, global_hostcalls)
+    (; obj=create_executable(job, codeunits(obj)), entry, global_hostcalls)
 end
 
 # link a compiled shared object into a session-local `HIPFunction` on the active device.
