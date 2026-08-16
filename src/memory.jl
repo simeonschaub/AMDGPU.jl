@@ -165,6 +165,12 @@ function account!(stats::MemoryStats, bytes::Integer)
     Base.@atomic stats.live += bytes
 end
 
+# Stats for memory that isn't backed by a device pool (unified, host).
+# These allocations can be migrated by the driver and are sized against
+# system RAM rather than GPU memory, so we track them globally.
+const HOST_STATS = MemoryStats()
+host_stats() = HOST_STATS
+
 const EAGER_GC::Ref{Bool} = Ref{Bool}(@load_preference("eager_gc", true))
 
 function eager_gc!(flag::Bool)
@@ -204,8 +210,19 @@ function maybe_collect(; blocking::Bool = false)
         Base.@atomic stats.last_updated = current_time
     end
 
-    # Check if we are under memory pressure.
-    pressure = stats.live / stats.size
+    # Similarly re-estimate the host memory budget for unified/host allocations.
+    # `Sys.total_memory()` is cgroup-aware, so this does the right thing in containers.
+    if current_time - HOST_STATS.last_updated > 10
+        Base.@atomic HOST_STATS.size = Int(Sys.total_memory())
+        Base.@atomic HOST_STATS.last_updated = current_time
+    end
+
+    # Compute pressure for both pools and operate on whichever is dominant.
+    device_pressure = stats.size > 0 ? stats.live / stats.size : 0.0
+    host_pressure = HOST_STATS.size > 0 ? HOST_STATS.live / HOST_STATS.size : 0.0
+    pressure, dominant = device_pressure ≥ host_pressure ?
+        (device_pressure, stats) : (host_pressure, HOST_STATS)
+
     min_pressure = blocking ? 0.5 : 0.75
     pressure < min_pressure && return
 
@@ -214,11 +231,11 @@ function maybe_collect(; blocking::Bool = false)
     #   otherwise try hard
 
     # Check that we don't collect too often.
-    gc_rate = stats.last_gc_time / (current_time - stats.last_time)
+    gc_rate = dominant.last_gc_time / (current_time - dominant.last_time)
     # Tolerate 5% GC time.
     max_gc_rate = 0.05
     # If freed a lot of memory last time, double max GC rate.
-    (stats.last_freed > 0.1 * stats.size) && (max_gc_rate *= 2;)
+    (dominant.last_freed > 0.1 * dominant.size) && (max_gc_rate *= 2;)
     # Be more aggressive if we are going to block.
     blocking && (max_gc_rate *= 2;)
 
@@ -228,16 +245,19 @@ function maybe_collect(; blocking::Bool = false)
     gc_rate > max_gc_rate && return
 
     Base.@atomic stats.last_time = current_time
+    Base.@atomic HOST_STATS.last_time = current_time
 
-    # Call the GC.
+    # Call the GC. Snapshot live bytes for both pools before/after, since
+    # finalizers running during GC may free memory in either.
     pre_gc_live = stats.live
+    pre_gc_host_live = HOST_STATS.live
     gc_time = Base.@elapsed GC.gc(false)
-    post_gc_live = stats.live
 
     # Update stats.
-    freed = pre_gc_live - post_gc_live
-    Base.@atomic stats.last_freed = freed
+    Base.@atomic stats.last_freed = pre_gc_live - stats.live
+    Base.@atomic HOST_STATS.last_freed = pre_gc_host_live - HOST_STATS.live
     Base.@atomic stats.last_gc_time = 0.75 * stats.last_gc_time + 0.25 * gc_time
+    Base.@atomic HOST_STATS.last_gc_time = 0.75 * HOST_STATS.last_gc_time + 0.25 * gc_time
     return
 end
 
@@ -404,41 +424,82 @@ function pool_status(io::IO=stdout)
 end
 
 
-# TODO handle stream capturing when we support HIP graphs
+# to safely use allocated memory across tasks and devices, we don't simply return raw
+# memory objects, but wrap them in a manager that ensures synchronization and ownership.
 mutable struct Managed{M}
     const mem::M
     const lock::ReentrantLock
+
+    # which stream is currently using the memory.
     stream::HIPStream
+
+    # whether accessing this memory can cause implicit synchronization
+    synchronizing::Bool
+
+    # whether there are outstanding operations that haven't been synchronized
     dirty::Bool
+
+    # whether the memory has been captured in a way that makes the dirty bit unreliable
     captured::Bool
 
-    function Managed(mem; stream=AMDGPU.stream(), dirty=true, captured=false)
-        new{typeof(mem)}(mem, ReentrantLock(), stream, dirty, captured)
-    end
-end
-
-function synchronize(m::Managed)
-    Base.@lock m.lock begin
-        m.dirty || return
-        synchronize(m.stream)
-        m.dirty = false
-        return
+    function Managed(mem; stream=AMDGPU.stream(), synchronizing=true,
+                     dirty=true, captured=false)
+        # NOTE: memory starts as dirty, because stream-ordered allocations are only
+        #       guaranteed to be physically allocated at a synchronization event.
+        new{typeof(mem)}(mem, ReentrantLock(), stream, synchronizing, dirty, captured)
     end
 end
 
 Base.sizeof(m::Managed) = sizeof(m.mem)
 
-function take_ownership!(managed::Managed; stream::HIPStream=AMDGPU.stream())
-    # TODO handle stream capture
+# wait for the current owner of memory to finish processing
+function synchronize(managed::Managed)
+    Base.@lock managed.lock begin
+        synchronize(managed.stream)
+        managed.dirty = false
+        return
+    end
+end
+
+function maybe_synchronize(managed::Managed)
+    Base.@lock managed.lock begin
+        if managed.synchronizing && (managed.dirty || managed.captured)
+            synchronize(managed)
+        end
+        return
+    end
+end
+
+# Transfer stream ownership of an allocation and mark it dirty in anticipation of a
+# device-side operation. The caller must hold `managed.lock` until that operation has
+# been submitted to `stream`, so the recorded owner cannot become visible before its
+# submission.
+function take_ownership!(managed::Managed{M}; stream::HIPStream=AMDGPU.stream()) where M
+    sizeof(managed) == 0 && return managed
+
+    # accessing memory during stream capture: taint the memory so we always synchronize
+    if HIP.is_capturing(stream)
+        managed.captured = true
+    end
 
     # TODO handle access on another device
-    # if M == Mem.HIPBuffer && managed.mem.ctx != tls.ctx
+    # if M <: Mem.HIPBuffer && managed.mem.ctx != tls.ctx
     #     # Enable peer-to-peer access.
     # end
 
+    # accessing memory on another stream: ensure the data is ready and take ownership
     if managed.stream != stream
-        synchronize(managed)
+        maybe_synchronize(managed)
         managed.stream = stream
+    end
+
+    # prefetch unified memory as we're likely to use it on the GPU
+    if M <: Mem.UnifiedBuffer
+        can_prefetch = !HIP.is_capturing(stream)
+        can_prefetch &= HIP.attribute(stream.device,
+            HIP.hipDeviceAttributeConcurrentManagedAccess) == 1
+        can_prefetch &= HIP.ndevices() == 1
+        can_prefetch && Mem.prefetch(managed.mem; device=stream.device, stream)
     end
 
     managed.dirty = true
@@ -468,15 +529,49 @@ function with_managed(f::F, managed::AbstractVector{<:Managed};
     end
 end
 
+# NOTE: unlike CUDA.jl, AMDGPU.jl does not have a dedicated device pointer type, so
+#       `convert(Ptr, managed)` returns a device-accessible pointer. Use
+#       [`host_pointer`](@ref) to get a CPU-accessible pointer instead.
 function Base.convert(::Type{Ptr{T}}, managed::Managed{M}) where {T, M}
     Base.@lock managed.lock begin
+        # let null pointers pass through as-is
+        ptr = convert(Ptr{T}, Mem.device_ptr(managed.mem))
+        ptr == C_NULL && return ptr
+
         take_ownership!(managed)
-        # TODO introduce HIPPtr to differentiate
+        return ptr
+    end
+end
+
+"""
+    host_pointer(::Type{Ptr{T}}, managed::Managed)
+
+Return a CPU-accessible pointer to the memory managed by `managed`, making sure
+any outstanding device-side operations have finished. Only supported for host
+and unified memory.
+"""
+function host_pointer(::Type{Ptr{T}}, managed::Managed{M}) where {T, M}
+    Base.@lock managed.lock begin
+        # let null pointers pass through as-is
+        ptr = convert(Ptr{T}, managed.mem)
+        ptr == C_NULL && return ptr
+
+        # accessing memory on the CPU: only allowed for host or unified allocations
         if M <: Mem.HIPBuffer
-            convert(Ptr{T}, managed.mem)
-        else
-            convert(Ptr{T}, managed.mem.dev_ptr)
+            throw(ArgumentError(
+                """cannot take the CPU address of GPU memory.
+
+                   You are probably falling back to or otherwise calling CPU functionality
+                   with GPU array inputs. This is not supported by regular device memory;
+                   ensure this operation is supported by AMDGPU.jl, and if it isn't, try to
+                   avoid it or rephrase it in terms of supported operations. Alternatively,
+                   you can consider using GPU arrays backed by unified memory by
+                   allocating using `roc(...; unified=true)`."""))
         end
+
+        # make sure any work on the memory has finished.
+        maybe_synchronize(managed)
+        return convert(Ptr{T}, Mem.host_ptr(managed.mem))
     end
 end
 

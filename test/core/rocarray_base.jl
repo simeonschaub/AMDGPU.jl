@@ -8,10 +8,10 @@ using AMDGPU: ROCArray, ROCVector, ROCMatrix, @allowscalar
     B = AMDGPU.Runtime.Mem.HIPBuffer
     x = ROCArray{Float32, 2, B}(undef, 16, 12)
     @test size(x) == (16, 12)
-    @test x.buf[].mem isa B
+    @test x.data[].mem isa B
     x = ROCArray{Float32, 2, B}(undef, (16, 12))
     @test size(x) == (16, 12)
-    @test x.buf[].mem isa B
+    @test x.data[].mem isa B
 end
 
 @testset "Constructor" begin
@@ -99,7 +99,7 @@ end
         @test AMDGPU.device(RA) == AMDGPU.device()
         @test RA isa ROCArray{Float64, 2}
         # pointer gives device mapped pointer, not host.
-        @test pointer(RA) == RA.buf[].mem.dev_ptr
+        @test pointer(RA) == RA.data[].mem.dev_ptr
 
         # ROCArray -> Array copy.
         B = zeros(4, 4)
@@ -264,6 +264,88 @@ end
     R = transpose(AMDGPU.zeros(Float32, 2, 3))
     A = ROCArray(rand(Float32, 3, 2, 10))
     @test @inferred(GPUArrays.mapreducedim!(identity, +, R, A)) === R
+end
+
+@testset "unified memory" begin
+    Mem = AMDGPU.Mem
+
+    x = ROCArray{Float32, 1, Mem.UnifiedBuffer}(undef, 4)
+    @test is_unified(x)
+    @test !is_device(x)
+    @test !is_host(x)
+    @test sizeof(x) == 4 * sizeof(Float32)
+
+    y = ROCArray{Float32}(undef, 2)
+    @test AMDGPU.memory_type(y) == AMDGPU.default_memory
+    @test is_device(ROCArray{Float32, 1, Mem.HIPBuffer}(undef, 2))
+    @test is_host(ROCArray{Float32, 1, Mem.HostBuffer}(undef, 2))
+
+    @testset "roc adaptor" begin
+        a = roc([1.0, 2.0]; unified=true)
+        @test a isa ROCArray{Float32, 1, Mem.UnifiedBuffer}
+        @test is_unified(a)
+        @test Array(a) == [1f0, 2f0]
+
+        @test is_device(roc([1, 2]; device=true))
+        @test is_host(roc([1, 2]; host=true))
+        @test_throws ArgumentError roc([1, 2]; device=true, unified=true)
+    end
+
+    @testset "host<->device transfers" begin
+        a = ROCArray{Int, 1, Mem.UnifiedBuffer}(collect(1:8))
+        @test Array(a) == 1:8
+
+        # CPU-side scalar indexing works without @allowscalar
+        @test a[3] == 3
+        a[3] = 42
+        @test Array(a) == [1, 2, 42, 4, 5, 6, 7, 8]
+
+        # GPU-side operations see the same memory
+        a .+= 1
+        @test Array(a) == [2, 3, 43, 5, 6, 7, 8, 9]
+
+        # copyto! from and to host arrays
+        b = zeros(Int, 8)
+        copyto!(b, a)
+        @test b == Array(a)
+        copyto!(a, collect(11:18))
+        @test Array(a) == 11:18
+    end
+
+    @testset "unsafe_wrap(Array, ::ROCArray)" begin
+        a = ROCArray{Float64, 2, Mem.UnifiedBuffer}(undef, 2, 3)
+        fill!(a, 1.0)
+        AMDGPU.synchronize()
+        h = unsafe_wrap(Array, a)
+        @test h isa Array{Float64, 2}
+        @test size(h) == (2, 3)
+        @test all(h .== 1.0)
+        h[1, 1] = 2.0
+        @test @allowscalar a[1, 1] == 2.0
+    end
+
+    @testset "unsafe_wrap managed pointer" begin
+        a = ROCArray{Float32, 1, Mem.UnifiedBuffer}(collect(1f0:4f0))
+        b = unsafe_wrap(ROCArray, pointer(a), (4,))
+        @test is_unified(b)
+        @test Array(b) == Array(a)
+    end
+
+    @testset "resize!" begin
+        a = ROCArray{Int, 1, Mem.UnifiedBuffer}(collect(1:4))
+        resize!(a, 8)
+        @test length(a) == 8
+        @test is_unified(a)
+        @test Array(a)[1:4] == 1:4
+    end
+
+    @testset "broadcast promotes mixed memory to unified" begin
+        a = ROCArray{Float32, 1, Mem.HIPBuffer}(ones(Float32, 4))
+        b = ROCArray{Float32, 1, Mem.UnifiedBuffer}(ones(Float32, 4))
+        c = a .+ b
+        @test is_unified(c)
+        @test Array(c) == fill(2f0, 4)
+    end
 end
 
 end

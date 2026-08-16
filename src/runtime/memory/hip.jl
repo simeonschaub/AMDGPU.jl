@@ -74,6 +74,8 @@ Base.sizeof(b::HIPBuffer) = UInt64(b.bytesize)
 
 Base.convert(::Type{Ptr{T}}, buf::HIPBuffer) where T = convert(Ptr{T}, buf.ptr)
 
+@inline device_ptr(buf::HIPBuffer) = buf.ptr
+
 function view(buf::HIPBuffer, bytesize::Int)
     bytesize > buf.bytesize && throw(BoundsError(buf, bytesize))
     HIPBuffer(buf.device, buf.ctx, buf.ptr + bytesize, buf.bytesize - bytesize, buf.own)
@@ -90,14 +92,33 @@ end
 
 function memcpy!(dst, src, bytesize::Int; stream::HIP.HIPStream)
     bytesize == 0 && return
-    dst_type = attributes(convert(Ptr{Cvoid}, dst)).type
-    src_type = attributes(convert(Ptr{Cvoid}, src)).type
-    kind = if src_type == HIP.hipMemoryTypeDevice
-        dst_type == HIP.hipMemoryTypeDevice ? HIP.hipMemcpyDeviceToDevice : HIP.hipMemcpyDeviceToHost
+    dst_attrs = attributes(convert(Ptr{Cvoid}, dst))
+    src_attrs = attributes(convert(Ptr{Cvoid}, src))
+    kind = if dst_attrs.isManaged == 1 || src_attrs.isManaged == 1 ||
+              dst_attrs.type == HIP.hipMemoryTypeManaged ||
+              src_attrs.type == HIP.hipMemoryTypeManaged
+        # let the runtime figure out the direction for managed memory
+        HIP.hipMemcpyDefault
+    elseif src_attrs.type == HIP.hipMemoryTypeDevice
+        dst_attrs.type == HIP.hipMemoryTypeDevice ? HIP.hipMemcpyDeviceToDevice : HIP.hipMemcpyDeviceToHost
     else
-        dst_type == HIP.hipMemoryTypeDevice ? HIP.hipMemcpyHostToDevice : HIP.hipMemcpyHostToHost
+        dst_attrs.type == HIP.hipMemoryTypeDevice ? HIP.hipMemcpyHostToDevice : HIP.hipMemcpyHostToHost
     end
     HIP.memcpy(dst, src, bytesize, kind, stream)
+    return
+end
+
+function memset!(ptr::Ptr{T}, value::T, len::Integer; stream::HIP.HIPStream) where T
+    len == 0 && return
+    if sizeof(T) == 1
+        HIP.hipMemsetD8Async(ptr, reinterpret(UInt8, value), len, stream)
+    elseif sizeof(T) == 2
+        HIP.hipMemsetD16Async(ptr, reinterpret(UInt16, value), len, stream)
+    elseif sizeof(T) == 4
+        HIP.hipMemsetD32Async(ptr, reinterpret(Int32, value), len, stream)
+    else
+        throw(ArgumentError("`memset!` only supports 1, 2 or 4-byte elements."))
+    end
     return
 end
 
@@ -164,6 +185,7 @@ end
 Base.convert(::Type{Ptr{T}}, buf::HostBuffer) where T = convert(Ptr{T}, buf.ptr)
 
 @inline device_ptr(buf::HostBuffer) = buf.dev_ptr
+@inline host_ptr(buf::HostBuffer) = buf.ptr
 
 function free(buf::HostBuffer; kwargs...)
     buf.own || return
@@ -173,6 +195,101 @@ function free(buf::HostBuffer; kwargs...)
     else
         HIP.hipHostFree(buf.ptr)
     end
+    return
+end
+
+## unified (managed) memory
+
+struct UnifiedBuffer <: AbstractAMDBuffer
+    device::HIPDevice
+    ctx::HIPContext
+    ptr::Ptr{Cvoid}
+    bytesize::Int
+    own::Bool
+end
+
+function UnifiedBuffer()
+    s = AMDGPU.stream()
+    UnifiedBuffer(s.device, s.ctx, C_NULL, 0, true)
+end
+
+"""
+Allocate unified (managed) memory via `hipMallocManaged`, which is accessible
+from both the host and the device, with pages automatically migrating between
+them on demand. Freed by `hipFree` through [`free`](@ref).
+"""
+function UnifiedBuffer(
+    bytesize::Integer; stream::HIP.HIPStream = AMDGPU.stream(),
+)
+    bytesize == 0 && return UnifiedBuffer()
+
+    ptr_ref = Ref{Ptr{Cvoid}}()
+    HIP.hipMallocManaged(ptr_ref, bytesize, HIP.hipMemAttachGlobal)
+    ptr = ptr_ref[]
+    ptr == C_NULL && throw(HIP.HIPError(HIP.hipErrorOutOfMemory))
+
+    AMDGPU.account!(AMDGPU.host_stats(), bytesize)
+    UnifiedBuffer(stream.device, stream.ctx, ptr, bytesize, true)
+end
+
+function UnifiedBuffer(ptr::Ptr{Cvoid}, bytesize::Int; own::Bool = false)
+    s = AMDGPU.stream()
+    UnifiedBuffer(s.device, s.ctx, ptr, bytesize, own)
+end
+
+Base.sizeof(b::UnifiedBuffer) = UInt64(b.bytesize)
+
+Base.convert(::Type{Ptr{T}}, buf::UnifiedBuffer) where T = convert(Ptr{T}, buf.ptr)
+
+# unified memory is accessible from both sides through the same pointer
+@inline device_ptr(buf::UnifiedBuffer) = buf.ptr
+@inline host_ptr(buf::UnifiedBuffer) = buf.ptr
+
+function view(buf::UnifiedBuffer, bytesize::Int)
+    bytesize > buf.bytesize && throw(BoundsError(buf, bytesize))
+    UnifiedBuffer(
+        buf.device, buf.ctx,
+        buf.ptr + bytesize, buf.bytesize - bytesize, buf.own)
+end
+
+function free(buf::UnifiedBuffer; kwargs...)
+    buf.own || return
+    buf.ptr == C_NULL && return
+    HIP.hipFree(buf.ptr)
+    AMDGPU.account!(AMDGPU.host_stats(), -buf.bytesize)
+    return
+end
+
+"""
+    prefetch(buf::UnifiedBuffer, [bytesize]; device, stream)
+
+Asynchronously prefetch unified memory to the given device
+(or back to the host when `device === nothing`).
+"""
+function prefetch(
+    buf::UnifiedBuffer, bytesize::Integer = sizeof(buf);
+    device::Union{HIPDevice, Nothing} = AMDGPU.device(),
+    stream::HIP.HIPStream = AMDGPU.stream(),
+)
+    bytesize == 0 && return
+    did = device ≡ nothing ? HIP.hipCpuDeviceId : Cint(HIP.device_id(device))
+    HIP.hipMemPrefetchAsync(buf.ptr, bytesize, did, stream)
+    return
+end
+
+"""
+    advise(buf::UnifiedBuffer, advice, [bytesize]; device)
+
+Advise the unified memory subsystem about the usage pattern of `buf`,
+e.g. `HIP.hipMemAdviseSetReadMostly` or `HIP.hipMemAdviseSetCoarseGrain`.
+"""
+function advise(
+    buf::UnifiedBuffer, advice::HIP.hipMemoryAdvise, bytesize::Integer = sizeof(buf);
+    device::Union{HIPDevice, Nothing} = buf.device,
+)
+    bytesize == 0 && return
+    did = device ≡ nothing ? HIP.hipCpuDeviceId : Cint(HIP.device_id(device))
+    HIP.hipMemAdvise(buf.ptr, bytesize, advice, did)
     return
 end
 
@@ -273,6 +390,17 @@ function is_pinned(ptr)
 end
 
 """
+    is_managed(ptr) -> Bool
+
+Return `true` if `ptr` points to unified (managed) memory.
+"""
+function is_managed(ptr)
+    ptr == C_NULL && return false
+    data = attributes(ptr)
+    return data.isManaged == 1 || data.type == HIP.hipMemoryTypeManaged
+end
+
+"""
 Asynchronous 3D array copy.
 
 # Arguments:
@@ -305,7 +433,9 @@ function unsafe_copy3d!(
     dstPos = HIP.hipPos((dstPos[1] - 1) * Base.aligned_sizeof(T), dstPos[2] - 1, dstPos[3] - 1)
 
     extent = HIP.hipExtent(width * Base.aligned_sizeof(T), height, depth)
-    kind = if D <: HIPBuffer && S <: HIPBuffer
+    kind = if D <: UnifiedBuffer || S <: UnifiedBuffer
+        HIP.hipMemcpyDefault
+    elseif D <: HIPBuffer && S <: HIPBuffer
         HIP.hipMemcpyDeviceToDevice
     elseif D <: HIPBuffer && S <: HostBuffer
         HIP.hipMemcpyHostToDevice

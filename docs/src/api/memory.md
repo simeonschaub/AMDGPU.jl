@@ -7,6 +7,31 @@ end
 
 # Memory Allocation and Intrinsics
 
+## Memory Types
+
+A [`ROCArray`](@ref) can be backed by one of three kinds of memory,
+selected through its third type parameter `B`:
+
+- `Mem.HIPBuffer`: regular device memory, allocated through HIP's
+  stream-ordered memory pool. This is the default.
+- `Mem.UnifiedBuffer`: unified (managed) memory, allocated with
+  `hipMallocManaged`. It is accessible from both the CPU and the GPU, with
+  pages automatically migrating between them on demand. Arrays backed by
+  unified memory can be indexed from the host without `@allowscalar`, and can
+  be wrapped in a regular `Array` with `unsafe_wrap(Array, x)`.
+- `Mem.HostBuffer`: page-locked (pinned) host memory that is mapped into the
+  GPU's address space.
+
+```julia
+ROCArray{Float32, 2, AMDGPU.Mem.UnifiedBuffer}(undef, 4, 4)  # unified memory
+roc(rand(Float32, 4, 4); unified=true)                       # ditto
+```
+
+Use `is_device`, `is_unified` and `is_host` to query the memory type of an
+array. The default memory type can be changed with the `default_memory`
+preference, e.g. by adding `default_memory = "unified"` to the `[AMDGPU]`
+section of your `LocalPreferences.toml`.
+
 ## Memory Varieties
 
 GPUs contain various kinds of memory, just like CPUs:
@@ -141,7 +166,7 @@ julia> x = zeros(Float32, 4, 4);
 
 julia> xd = unsafe_wrap(ROCArray, pointer(x), size(x));
 
-julia> pointer(xd) == xd.buf[].mem.dev_ptr # Pointer to `xd` is a device-mapped pointer, not host pointer.
+julia> pointer(xd) == xd.data[].mem.dev_ptr # Pointer to `xd` is a device-mapped pointer, not host pointer.
 true
 
 julia> xd .+= 1f0 # Can be used in kernels, host array `x` is also updated.
