@@ -225,6 +225,7 @@ function __init__()
     end
 
     if functional(:hip)
+        local_rocm || ROCm_Runtime.warn_environment_conflicts()
         HIP.devices()
     else
         @warn "HIP library is unavailable, HIP integration will be disabled."

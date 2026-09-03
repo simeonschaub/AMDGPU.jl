@@ -39,6 +39,12 @@ The artifact is chosen from the GPU architectures detected on the host, which on
 
 There is no fallback path: the provider is decided when AMDGPU.jl is loaded, so an existing system-wide ROCm is only picked up after explicitly opting in with the `local` preference above.
 
+### Another ROCm in the environment
+
+The artifact cannot be combined with a ROCm that is already in the environment. The bundled libraries find each other through their `RUNPATH`, which the dynamic loader consults only after `LD_LIBRARY_PATH`, so a ROCm on `LD_LIBRARY_PATH` (loaded through a module, a uenv, or in AMD's containers) displaces the bundle's copies of HSA, comgr and the other libraries HIP depends on. `LLVM_PATH` has the same effect on comgr, which then compiles against that tree's device libraries. Either mix of two ROCm releases in one process typically fails at the first stream creation with `hipErrorOutOfMemory` (see [ROCm/TheRock#7426](https://github.com/ROCm/TheRock/issues/7426)).
+
+AMDGPU.jl detects this when it loads and warns, naming the shadowing libraries. Remove that ROCm from `LD_LIBRARY_PATH` and unset `LLVM_PATH` before starting Julia, or opt into using it instead of the artifact with `AMDGPU.set_rocm_version!(local_rocm=true)`.
+
 The bundles currently shipped are:
 
 ```@eval

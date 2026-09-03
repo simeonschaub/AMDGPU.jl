@@ -65,26 +65,79 @@ function get_library(name::String)::String
     return ""
 end
 
-# HIP pulls `libamd_comgr` in transitively, so a system ROCm on LD_LIBRARY_PATH
-# displaces the bundle's. Claim the soname first.
-function preload_comgr()
-    isempty(libamd_comgr) && return
-    try
-        Libdl.dlopen(libamd_comgr)
-    catch err
-        @debug "Could not preload $libamd_comgr" exception=(err, catch_backtrace())
+## environment checks
+
+# The bundle's libraries carry a DT_RUNPATH, which the loader searches only after
+# LD_LIBRARY_PATH, and they name their ROCm dependencies by soname. A ROCm on
+# LD_LIBRARY_PATH (a module, a uenv, AMD's containers) therefore displaces the
+# bundle's copies of whatever HIP pulls in transitively (HSA, comgr, ...), and
+# the process ends up mixing two releases: comgr then links HIP's blit kernels
+# against foreign device libraries, which surfaces as hipErrorOutOfMemory at the
+# first stream (https://github.com/ROCm/TheRock/issues/7426). The loader reads
+# LD_LIBRARY_PATH once at start-up, so this cannot be undone from inside the
+# process; detect it once HIP is loaded and say what to do instead.
+#
+# LLVM_PATH is a second route to the same mix: comgr roots its clang driver there
+# and takes that tree's device libraries.
+
+# The soname-like part of a library file name: up to `.so` and its first version
+# component, so that `libhsa-runtime64.so.1.21.0` and `libhsa-runtime64.so.1`
+# compare equal, while `libLLVM.so.23.0git` and Julia's `libLLVM.so.18.1jl` do not.
+function library_key(name::AbstractString)
+    m = match(r"^.+?\.so(?:\.\d+)?", name)
+    return m === nothing ? nothing : String(m.match)
+end
+
+# Libraries loaded into this process from outside the bundle that the bundle
+# also ships, i.e. that shadow it.
+function shadowed_libraries()::Vector{String}
+    (Sys.islinux() && is_available()) || return String[]
+    libdir = joinpath(artifact_dir, "lib")
+    bundled = Set{String}()
+    for dir in (libdir, joinpath(libdir, "llvm", "lib"), joinpath(libdir, "rocm_sysdeps", "lib"))
+        isdir(dir) || continue
+        for file in readdir(dir)
+            key = library_key(file)
+            key === nothing || push!(bundled, key)
+        end
     end
+
+    bundle_root = realpath(artifact_dir)
+    shadowed = String[]
+    for line in eachline("/proc/self/maps")
+        fields = split(line; limit = 6)
+        length(fields) == 6 || continue
+        path = String(strip(fields[6]))
+        startswith(path, "/") || continue
+        startswith(path, bundle_root) && continue
+        key = library_key(basename(path))
+        key in bundled && push!(shadowed, path)
+    end
+    return unique!(shadowed)
+end
+
+function warn_environment_conflicts()
+    is_available() || return
+    # loading HIP is what resolves its dependencies; AMDGPU loads it anyway
+    isempty(libamdhip64) || Libdl.dlopen(libamdhip64)
+
+    shadowed = shadowed_libraries()
+    llvm_path = get(ENV, "LLVM_PATH", nothing)
+    isempty(shadowed) && llvm_path === nothing && return
+
+    msg = "Another ROCm installation in the environment is mixed with the ROCm artifact. Expect failures such as hipErrorOutOfMemory at the first stream."
+    if !isempty(shadowed)
+        msg *= "\n\nLibraries on LD_LIBRARY_PATH shadow the artifact's:\n" *
+               join(("  " * path for path in shadowed), "\n")
+    end
+    if llvm_path !== nothing
+        msg *= "\n\nLLVM_PATH=$llvm_path makes comgr compile against that tree's device libraries instead of the artifact's."
+    end
+    msg *= "\n\nRemove that ROCm from LD_LIBRARY_PATH and unset LLVM_PATH before starting Julia, or use it instead of the artifact with `AMDGPU.set_rocm_version!(local_rocm=true)`."
+    @warn msg
     return
 end
 
-# comgr roots its clang driver at LLVM_PATH, which then picks up the device
-# libraries named by ROCM_PATH / HIP_DEVICE_LIB_PATH / DEVICE_LIB_PATH.
-function clear_llvm_path()
-    haskey(ENV, "LLVM_PATH") || return
-    @debug "Unsetting LLVM_PATH ($(ENV["LLVM_PATH"])): it redirects comgr away from the ROCm artifact"
-    delete!(ENV, "LLVM_PATH")
-    return
-end
 
 function __init__()
     global artifact_dir = find_artifact_dir()
@@ -105,10 +158,6 @@ function __init__()
     global libhipblaslt = get_library(lib_prefix * "hipblaslt")
     global libhiptensor = get_library(lib_prefix * "hiptensor")
     global libMIOpen = get_library(lib_prefix * "MIOpen")
-
-    # Both must precede `AMDGPU.__init__`, which loads HSA and HIP.
-    preload_comgr()
-    clear_llvm_path()
 end
 
 end
